@@ -54,5 +54,15 @@ class TestPredictiveContextEngine(unittest.TestCase):
         mode = self.engine.update_context(ambient_lux=1500.0, speed_mps=25.0, acc_var=0.25, gyro_abs=0.02)
         self.assertEqual(mode, "HIGHWAY_CRUISING")
 
+    def test_nhc_constraint_updates_lateral_velocity(self):
+        """Tests that 6-state EKF active NHC update clamps lateral velocity."""
+        # State: [px, py, v_fwd, v_lat, heading, gyro_bias]
+        self.assertEqual(len(self.ekf.x), 6)
+        # Inject lateral velocity perturbance
+        self.ekf.x[3] = 2.5  # 2.5 m/s lateral slip
+        self.ekf.update_nhc()
+        # NHC pseudo-measurement with 0.05^2 variance pulls lateral velocity strongly toward 0
+        self.assertLess(abs(self.ekf.x[3]), 0.5)
+
 if __name__ == "__main__":
     unittest.main()

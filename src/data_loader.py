@@ -131,20 +131,39 @@ class DriveDataset:
             calc_spd = np.sqrt(dx**2 + dy**2) / dt
             out["speed"] = np.clip(calc_spd, 0.0, 45.0)
 
-        # 4. Heading (Smooth Course over Ground)
-        dx = np.diff(out["pos_x"].values, prepend=out["pos_x"].values[0])
-        dy = np.diff(out["pos_y"].values, prepend=out["pos_y"].values[0])
-        dx_smooth = pd.Series(dx).rolling(7, min_periods=1, center=True).mean().values
-        dy_smooth = pd.Series(dy).rolling(7, min_periods=1, center=True).mean().values
-        course = np.arctan2(dx_smooth, dy_smooth)
+        # 4. Heading (Native GPS Orientation or Course Over Ground Fallback)
+        ori_col = None
+        for k in ["gps orientation", "gps orientation ()", "gps_orientation", "course", "gps_heading"]:
+            if k in cols:
+                ori_col = cols[k]
+                break
+        if ori_col is None:
+            for k, v in cols.items():
+                if "gps" in k and "orient" in k:
+                    ori_col = v
+                    break
 
-        valid_heading = np.zeros(len(df))
-        last_h = course[0] if len(course) > 0 else 0.0
-        for i in range(len(df)):
-            if out["speed"].iloc[i] > 0.4:
-                last_h = course[i]
-            valid_heading[i] = last_h
-        out["heading"] = valid_heading
+        if ori_col is not None:
+            raw_ori = df[ori_col].values.astype(float)
+            # IO-VNBD GPS ORIENTATION is clockwise azimuth in degrees [0, 360) where 0=North, 90=East
+            # Convert to radians wrapped to [-pi, pi]
+            ori_rad = np.deg2rad(raw_ori)
+            ori_wrapped = (ori_rad + np.pi) % (2.0 * np.pi) - np.pi
+            out["heading"] = ori_wrapped
+        else:
+            dx = np.diff(out["pos_x"].values, prepend=out["pos_x"].values[0])
+            dy = np.diff(out["pos_y"].values, prepend=out["pos_y"].values[0])
+            dx_smooth = pd.Series(dx).rolling(7, min_periods=1, center=True).mean().values
+            dy_smooth = pd.Series(dy).rolling(7, min_periods=1, center=True).mean().values
+            course = np.arctan2(dx_smooth, dy_smooth)
+
+            valid_heading = np.zeros(len(df))
+            last_h = course[0] if len(course) > 0 else 0.0
+            for i in range(len(df)):
+                if out["speed"].iloc[i] > 0.4:
+                    last_h = course[i]
+                valid_heading[i] = last_h
+            out["heading"] = valid_heading
 
         # 5. Accelerometer (m/s^2)
         for k, v in cols.items():
@@ -219,7 +238,13 @@ class DriveDataset:
     def get_data(self) -> pd.DataFrame:
         return self.standardized_df
 
-def load_real_iovnbd_drive(filepath: str, driver_id: Optional[str] = None, max_samples: Optional[int] = None) -> DriveDataset:
+def load_real_iovnbd_drive(
+    filepath: str,
+    driver_id: Optional[str] = None,
+    max_samples: Optional[int] = None,
+    offset: int = 0,
+    name_suffix: str = ""
+) -> DriveDataset:
     assert os.path.exists(filepath), f"File not found: {filepath}"
     size = os.path.getsize(filepath)
     assert size > 1000, f"Error: {filepath} is an un-pulled Git LFS pointer ({size} bytes). Run git lfs pull first."
@@ -237,10 +262,12 @@ def load_real_iovnbd_drive(filepath: str, driver_id: Optional[str] = None, max_s
             driver_id = "Unknown"
 
     df = pd.read_csv(filepath, encoding="latin-1")
+    if offset > 0:
+        df = df.iloc[offset:].copy()
     if max_samples and len(df) > max_samples:
         df = df.iloc[:max_samples].copy()
 
-    name = os.path.basename(filepath).replace(".csv", "")
+    name = os.path.basename(filepath).replace(".csv", "") + name_suffix
     return DriveDataset(df, name=name, driver_id=driver_id, is_real_iovnbd=True)
 
 def get_real_iovnbd_benchmark_suite(max_samples_per_drive: int = 3000) -> Dict[str, Any]:
@@ -258,24 +285,33 @@ def get_real_iovnbd_benchmark_suite(max_samples_per_drive: int = 3000) -> Dict[s
     e_vta1a = os.path.join(repo_base, "Vta (Driver E)", "Vta01a", "S-Vta1a.csv")
     e_vta1b = os.path.join(repo_base, "Vta (Driver E)", "Vta01b", "S-Vta1b.csv")
 
+    # Balanced, diversified multi-driver training suite (Drivers A, B, D, E)
     train_files = [
-        ("Driver_A_S1", a_s1, "A"),
-        ("Driver_A_S2", a_s2, "A"),
-        ("Driver_E_Vfa01", e_vfa01, "E"),
-        ("Driver_E_Vta1a", e_vta1a, "E"),
+        ("Driver_A_S1", a_s1, "A", 0, ""),
+        ("Driver_A_S2", a_s2, "A", 0, ""),
+        ("Driver_B_M_train", b_m, "B", 10000, "_train"),
+        ("Driver_D_Y1_train", d_y1, "D", 10000, "_train"),
+        ("Driver_E_Vfa01", e_vfa01, "E", 0, ""),
+        ("Driver_E_Vta1a", e_vta1a, "E", 0, ""),
     ]
 
     test_files = [
-        ("Driver_A_S3a", a_s3a, "A"),
-        ("Driver_A_S3b", a_s3b, "A"),
-        ("Driver_B_M_n1", b_m, "B"),
-        ("Driver_D_Y1_n1", d_y1, "D"),
-        ("Driver_E_Vfa02", e_vfa02, "E"),
-        ("Driver_E_Vta1b", e_vta1b, "E"),
+        ("Driver_A_S3a", a_s3a, "A", 0, ""),
+        ("Driver_A_S3b", a_s3b, "A", 0, ""),
+        ("Driver_B_M_n1", b_m, "B", 0, ""),
+        ("Driver_D_Y1_n1", d_y1, "D", 0, ""),
+        ("Driver_E_Vfa02", e_vfa02, "E", 0, ""),
+        ("Driver_E_Vta1b", e_vta1b, "E", 0, ""),
     ]
 
-    train_drives = [load_real_iovnbd_drive(p, d_id, max_samples=max_samples_per_drive) for name, p, d_id in train_files]
-    test_drives = [load_real_iovnbd_drive(p, d_id, max_samples=max_samples_per_drive) for name, p, d_id in test_files]
+    train_drives = [
+        load_real_iovnbd_drive(p, d_id, max_samples=max_samples_per_drive, offset=off, name_suffix=suf)
+        for name, p, d_id, off, suf in train_files
+    ]
+    test_drives = [
+        load_real_iovnbd_drive(p, d_id, max_samples=max_samples_per_drive, offset=off, name_suffix=suf)
+        for name, p, d_id, off, suf in test_files
+    ]
 
     return {
         "train_drives": train_drives,

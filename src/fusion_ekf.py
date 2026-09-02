@@ -46,8 +46,8 @@ class VehicleContextEngine:
 
 class KinematicFusionEKF:
     """
-    Confidence-Aware 5-State Navigation Extended Kalman Filter.
-    State Vector: x = [pos_x (East), pos_y (North), forward_velocity (m/s), heading (rad), gyro_bias (rad/s)]^T
+    Confidence-Aware 6-State Navigation Extended Kalman Filter with Real Non-Holonomic Constraints (NHC).
+    State Vector: x = [pos_x (East), pos_y (North), v_fwd (m/s), v_lat (m/s), heading (rad), gyro_bias (rad/s)]^T
     """
 
     def __init__(
@@ -55,11 +55,13 @@ class KinematicFusionEKF:
         init_x: float = 0.0,
         init_y: float = 0.0,
         init_v: float = 0.0,
+        init_v_lat: float = 0.0,
         init_heading: float = 0.0,
         init_gyro_bias: float = 0.0,
         driver_style: str = "normal",
         q_pos: float = 0.05,
         q_vel_base: float = 0.12,
+        q_vel_lat: float = 0.05,
         q_heading: float = 0.003,
         q_bias: float = 1e-6,
         r_gps_pos: float = 2.0,
@@ -67,13 +69,15 @@ class KinematicFusionEKF:
         r_gps_heading: float = 0.12
     ):
         self.driver_style = driver_style
-        self.x = np.array([init_x, init_y, init_v, init_heading, init_gyro_bias], dtype=float)
-        self.P = np.diag([4.0, 4.0, 1.0, 0.05, 0.0001])
+        self.x = np.array([init_x, init_y, init_v, init_v_lat, init_heading, init_gyro_bias], dtype=float)
+        self.P = np.diag([4.0, 4.0, 1.0, 0.25, 0.05, 0.0001])
         
         self.q_pos = q_pos
         self.q_vel_base = q_vel_base
+        self.q_vel_lat = q_vel_lat
         self.q_heading = q_heading
         self.q_bias = q_bias
+        self.r_gps_heading_base = r_gps_heading
 
         # Driver-Adaptive Physical Constraint Parameters
         if driver_style.lower() in ["aggressive", "e"]:
@@ -86,97 +90,156 @@ class KinematicFusionEKF:
 
         self.R_gps = np.diag([r_gps_pos**2, r_gps_pos**2, r_gps_vel**2, r_gps_heading**2])
         self.R_gps_nohdg = np.diag([r_gps_pos**2, r_gps_pos**2, r_gps_vel**2])
-        self.R_zupt = np.diag([0.04**2])
+        self.R_zupt = np.diag([0.04**2, 0.04**2])
 
     def predict(self, dt: float, v_ai: float, v_ai_std: float, gyro_z: float, is_stationary: bool = False, is_tunnel_alert: bool = False):
         """
-        Confidence-Aware Prediction Step:
-        Dynamically scales the velocity blending weight alpha_v and process noise Q(t)
-        based on AI model uncertainty (v_ai_std).
+        Confidence-Aware 6-State Prediction Step:
+        Propagates 2D body velocities [v_fwd, v_lat], yaw, and positions.
+        Blends forward velocity with AI model uncertainty (v_ai_std).
         """
-        px, py, v, theta, bg = self.x
+        px, py, v_fwd, v_lat, theta, bg = self.x
 
         if is_stationary:
-            v_eff = 0.0
+            v_fwd_eff = 0.0
+            v_lat_eff = 0.0
             theta_new = theta
             alpha_v = 0.0
+            alpha_lat = 0.0
         else:
             # Dynamically modulate alpha based on AI model uncertainty sigma_v
-            # Confident (sigma -> 0) => alpha ~ 0.25; Uncertain (sigma -> 2.0) => alpha ~ 0.06
             alpha_base = 0.25
             alpha_v = alpha_base / (1.0 + 1.5 * max(0.0, v_ai_std))
-            v_eff = (1.0 - alpha_v) * v + alpha_v * v_ai
+            v_fwd_eff = (1.0 - alpha_v) * v_fwd + alpha_v * v_ai
+            
+            # Lateral velocity natural decay in body frame
+            alpha_lat = 0.10
+            v_lat_eff = (1.0 - alpha_lat) * v_lat
+            
             omega_corr = gyro_z - bg
             theta_new = wrap_angle(theta + omega_corr * dt)
 
-        px_new = px + v_eff * np.sin(theta_new) * dt
-        py_new = py + v_eff * np.cos(theta_new) * dt
-        v_new = v_eff
+        # Kinematics in ENU coordinate system:
+        # px (East)  dot = v_fwd * sin(theta) + v_lat * cos(theta)
+        # py (North) dot = v_fwd * cos(theta) - v_lat * sin(theta)
+        px_new = px + (v_fwd_eff * np.sin(theta_new) + v_lat_eff * np.cos(theta_new)) * dt
+        py_new = py + (v_fwd_eff * np.cos(theta_new) - v_lat_eff * np.sin(theta_new)) * dt
+        v_fwd_new = v_fwd_eff
+        v_lat_new = v_lat_eff
         bg_new = bg
 
-        self.x = np.array([px_new, py_new, v_new, theta_new, bg_new])
+        self.x = np.array([px_new, py_new, v_fwd_new, v_lat_new, theta_new, bg_new])
 
         # Dynamic Confidence-Aware Process Noise Q(t)
         beta_uncertainty = 1.5
         q_vel_dynamic = self.q_vel_base + beta_uncertainty * (v_ai_std**2)
-        
-        # In predictive tunnel alert mode, lock gyro bias random walk
         q_bias_dynamic = self.q_bias * 0.1 if is_tunnel_alert else self.q_bias
         
-        Q = np.diag([self.q_pos**2, self.q_pos**2, q_vel_dynamic, self.q_heading**2, q_bias_dynamic**2])
+        Q = np.diag([
+            self.q_pos**2,
+            self.q_pos**2,
+            q_vel_dynamic,
+            self.q_vel_lat**2,
+            self.q_heading**2,
+            q_bias_dynamic**2
+        ])
 
-        # Jacobian F (5x5)
-        F = np.eye(5)
+        # Jacobian F (6x6)
+        F = np.eye(6)
         if not is_stationary:
-            decay = (1.0 - alpha_v)
-            F[0, 2] = decay * np.sin(theta_new) * dt
-            F[0, 3] = v_eff * np.cos(theta_new) * dt
-            F[0, 4] = -v_eff * np.cos(theta_new) * dt**2
-            F[1, 2] = decay * np.cos(theta_new) * dt
-            F[1, 3] = -v_eff * np.sin(theta_new) * dt
-            F[1, 4] = v_eff * np.sin(theta_new) * dt**2
-            F[2, 2] = decay
-            F[3, 4] = -dt
+            decay_fwd = (1.0 - alpha_v)
+            decay_lat = (1.0 - alpha_lat)
+            sin_t = np.sin(theta_new)
+            cos_t = np.cos(theta_new)
+
+            # d(px_new)/d(v_fwd), d(px_new)/d(v_lat), d(px_new)/d(theta), d(px_new)/d(bg)
+            F[0, 2] = decay_fwd * sin_t * dt
+            F[0, 3] = decay_lat * cos_t * dt
+            F[0, 4] = (v_fwd_eff * cos_t - v_lat_eff * sin_t) * dt
+            F[0, 5] = -(v_fwd_eff * cos_t - v_lat_eff * sin_t) * (dt**2)
+
+            # d(py_new)/d(v_fwd), d(py_new)/d(v_lat), d(py_new)/d(theta), d(py_new)/d(bg)
+            F[1, 2] = decay_fwd * cos_t * dt
+            F[1, 3] = -decay_lat * sin_t * dt
+            F[1, 4] = -(v_fwd_eff * sin_t + v_lat_eff * cos_t) * dt
+            F[1, 5] = (v_fwd_eff * sin_t + v_lat_eff * cos_t) * (dt**2)
+
+            F[2, 2] = decay_fwd
+            F[3, 3] = decay_lat
+            F[4, 5] = -dt
         else:
             F[2, 2] = 0.0
+            F[3, 3] = 0.0
 
         self.P = F @ self.P @ F.T + Q
+
+    def update_nhc(self, lateral_variance: Optional[float] = None):
+        """
+        Non-Holonomic Constraint (NHC) Pseudo-Measurement Update:
+        Ground vehicle physical constraint: lateral velocity v_lat ≈ 0 in vehicle body frame.
+        Applies Joseph-form covariance projection with driver-adaptive noise variance.
+        """
+        I = np.eye(6)
+        r_nhc = lateral_variance if lateral_variance is not None else self.nhc_lateral_variance
+        
+        # Observation matrix H: measures v_lat (state index 3)
+        H_nhc = np.array([[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]])
+        R_nhc = np.array([[r_nhc]])
+        
+        # Virtual observation z = 0.0
+        y = np.array([0.0 - self.x[3]])
+        S = H_nhc @ self.P @ H_nhc.T + R_nhc
+        K = self.P @ H_nhc.T @ np.linalg.inv(S)
+
+        # NHC pseudo-measurement updates lateral velocity & position, decouple from gyro bias
+        K[5, :] = 0.0
+
+        self.x = self.x + K @ y
+        IKH = I - K @ H_nhc
+        self.P = IKH @ self.P @ IKH.T + K @ R_nhc @ K.T
 
     def update_gps(self, gps_x: float, gps_y: float, gps_speed: float, gps_heading: Optional[float] = None):
         """
         Partitioned Sequential GPS Update with Joseph-form Covariance Projection.
-        Step 1: Pos & Vel Update (3-state) -> updates [pos_x, pos_y, forward_v]
-        Step 2: Course Heading Update (1-state) -> updates [heading, gyro_bias]
+        Step 1: Pos & Forward Vel Update (3-state) -> updates [pos_x, pos_y, forward_v]
+        Step 2: Course Heading Update (1-state) with continuous inverse-speed variance scaling.
         """
-        I = np.eye(5)
+        I = np.eye(6)
 
         # ── Step 1: Position and Velocity Measurement Update ─────────────────
         z_pv = np.array([gps_x, gps_y, gps_speed])
         H_pv = np.array([
-            [1.0, 0.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0, 0.0]
+            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
         ])
         R_pv = np.diag([self.R_gps[0, 0], self.R_gps[1, 1], self.R_gps[2, 2]])
         y_pv = z_pv - H_pv @ self.x
         S_pv = H_pv @ self.P @ H_pv.T + R_pv
         K_pv = self.P @ H_pv.T @ np.linalg.inv(S_pv)
 
-        # Decouple: Position & speed carry no physical observability of gyro bias or heading
-        K_pv[3, :] = 0.0
+        # Decouple: Position & forward speed carry no physical observability of gyro bias or heading
         K_pv[4, :] = 0.0
+        K_pv[5, :] = 0.0
 
         self.x = self.x + K_pv @ y_pv
         # Joseph Form Covariance Update: P = (I - KH) P (I - KH)^T + K R K^T
         IKH_pv = I - K_pv @ H_pv
         self.P = IKH_pv @ self.P @ IKH_pv.T + K_pv @ R_pv @ K_pv.T
 
-        # ── Step 2: Course Heading Measurement Update (when moving) ──────────
-        if gps_heading is not None and gps_speed > 1.0:
+        # ── Step 2: Course Heading Measurement Update with Speed-Weighted Variance ──
+        if gps_heading is not None:
+            # Continuous inverse-speed variance scaling:
+            # When speed is high (> 5 m/s), R_h ~ R_h_base
+            # When speed is low (< 1 m/s), R_h scales up quadratically, naturally distrusting jitter
+            v_ref = max(float(gps_speed), 0.2)
+            v_scale = 1.0 + (1.5 / v_ref)**2
+            r_h_dynamic = (self.r_gps_heading_base**2) * v_scale
+
             z_h = np.array([gps_heading])
-            H_h = np.array([[0.0, 0.0, 0.0, 1.0, 0.0]])
-            R_h = np.array([[self.R_gps[3, 3]]])
-            y_h = np.array([wrap_angle(z_h[0] - self.x[3])])
+            H_h = np.array([[0.0, 0.0, 0.0, 0.0, 1.0, 0.0]])
+            R_h = np.array([[r_h_dynamic]])
+            y_h = np.array([wrap_angle(z_h[0] - self.x[4])])
             S_h = H_h @ self.P @ H_h.T + R_h
             K_h = self.P @ H_h.T @ np.linalg.inv(S_h)
 
@@ -184,25 +247,29 @@ class KinematicFusionEKF:
             K_h[0, :] = 0.0
             K_h[1, :] = 0.0
             K_h[2, :] = 0.0
+            K_h[3, :] = 0.0
 
             self.x = self.x + K_h @ y_h
-            self.x[3] = wrap_angle(self.x[3])
+            self.x[4] = wrap_angle(self.x[4])
             IKH_h = I - K_h @ H_h
             self.P = IKH_h @ self.P @ IKH_h.T + K_h @ R_h @ K_h.T
 
     def update_zupt(self):
-        """Zero-Velocity Update (ZUPT) using Joseph-form projection."""
-        I = np.eye(5)
-        H = np.array([[0.0, 0.0, 1.0, 0.0, 0.0]])
-        y = np.array([0.0 - self.x[2]])
+        """Zero-Velocity Update (ZUPT) constraining both forward and lateral velocity."""
+        I = np.eye(6)
+        H = np.array([
+            [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        ])
+        y = np.array([0.0 - self.x[2], 0.0 - self.x[3]])
         S = H @ self.P @ H.T + self.R_zupt
         K = self.P @ H.T @ np.linalg.inv(S)
 
-        # Velocity standstill observation only updates velocity
+        # Standstill observation only updates velocity states
         K[0, :] = 0.0
         K[1, :] = 0.0
-        K[3, :] = 0.0
         K[4, :] = 0.0
+        K[5, :] = 0.0
 
         self.x = self.x + K @ y
         IKH = I - K @ H
@@ -241,12 +308,14 @@ def run_fusion_pipeline(
     init_x = gps_x[0]
     init_y = gps_y[0]
     init_v = gps_v[0]
+    init_v_lat = 0.0
     init_heading = gps_h[0] if gps_h is not None else 0.0
 
     ekf = KinematicFusionEKF(
         init_x=init_x,
         init_y=init_y,
         init_v=init_v,
+        init_v_lat=init_v_lat,
         init_heading=init_heading,
         driver_style=driver_style
     )
@@ -254,6 +323,7 @@ def run_fusion_pipeline(
     fused_px = np.zeros(n)
     fused_py = np.zeros(n)
     fused_v = np.zeros(n)
+    fused_v_lat = np.zeros(n)
     fused_theta = np.zeros(n)
     fused_bg = np.zeros(n)
     is_blackout = np.zeros(n, dtype=bool)
@@ -271,14 +341,7 @@ def run_fusion_pipeline(
         acc_var = np.var(acc_x[s_idx:e_idx]) + np.var(acc_y[s_idx:e_idx])
         gyro_abs = np.abs(gyro_z[i])
 
-        # Multi-sensor context detection.
-        # IMPORTANT: Use min(ai_speed, gps_speed) for STANDSTILL detection.
-        # The AI speed model returns ~0.1-0.2 m/s at genuine stops due to model noise,
-        # which would suppress the STANDSTILL flag and allow the kinematic predict()
-        # to accumulate positional residual against the GPS fix — that residual then
-        # backpropagates through K[4,0] into the gyro bias state, driving it to
-        # physically implausible values (up to -0.15 rad/s) over a multi-second stop.
-        # GPS speed is reliable enough at update time for stop/go detection.
+        # Multi-sensor context detection
         speed_for_context = min(float(ai_speed[i]), float(gps_v[i]))
         mode = context_engine.update_context(
             ambient_lux=ambient_lux[i],
@@ -300,6 +363,11 @@ def run_fusion_pipeline(
             is_tunnel_alert=context_engine.tunnel_alert
         )
 
+        # 2. Continuous Non-Holonomic Constraint (NHC) Pseudo-Measurement Update
+        # Actively enforces v_lat ≈ 0 in vehicle body frame at all times (including blackouts)
+        ekf.update_nhc()
+
+        # 3. ZUPT when vehicle is at standstill
         if is_stopped:
             ekf.update_zupt()
 
@@ -311,22 +379,24 @@ def run_fusion_pipeline(
         pre_update_px[i] = ekf.x[0]
         pre_update_py[i] = ekf.x[1]
 
-        # 2. Measurement update during healthy GNSS window
+        # 4. Measurement update during healthy GNSS window
         if not in_outage:
-            hdg_meas = gps_h[i] if gps_h is not None and gps_v[i] > 1.0 else None
+            hdg_meas = gps_h[i] if gps_h is not None else None
             ekf.update_gps(gps_x=gps_x[i], gps_y=gps_y[i], gps_speed=gps_v[i], gps_heading=hdg_meas)
 
         fused_px[i] = ekf.x[0]
         fused_py[i] = ekf.x[1]
         fused_v[i] = ekf.x[2]
-        fused_theta[i] = ekf.x[3]
-        fused_bg[i] = ekf.x[4]
+        fused_v_lat[i] = ekf.x[3]
+        fused_theta[i] = ekf.x[4]
+        fused_bg[i] = ekf.x[5]
 
     res = pd.DataFrame({
         "timestamp": t,
         "fused_pos_x": fused_px,
         "fused_pos_y": fused_py,
         "fused_velocity": fused_v,
+        "fused_lat_velocity": fused_v_lat,
         "fused_heading": fused_theta,
         "fused_gyro_bias": fused_bg,
         "is_gnss_blackout": is_blackout,
