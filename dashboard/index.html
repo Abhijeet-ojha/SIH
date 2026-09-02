@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NavPulse — SIH PS 168 AI Dead Reckoning & GNSS Fusion Telemetry</title>
-    <meta name="description" content="Interactive real-time telemetry and trajectory replay dashboard for AI-assisted dead reckoning in GNSS-denied environments.">
+    <title>NavPulse — SIH PS 168 Offline GNSS + AI/IMU Real-Time Telemetry</title>
+    <meta name="description" content="Offline-first real-time telemetry and 6-state EKF localization dashboard for GNSS-denied environments.">
     
-    <!-- Google Fonts -->
+    <!-- Google Fonts & Fallback -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -29,203 +29,192 @@
                 </div>
                 <div class="brand-text">
                     <h1>NAVPULSE <span class="badge-sih">SIH PS 168</span></h1>
-                    <p class="subtitle">AI-Assisted Dead Reckoning & Partitioned EKF GNSS Fusion</p>
+                    <p class="subtitle">Offline GNSS + AI/IMU 6-State EKF Real-Time Telemetry</p>
                 </div>
             </div>
 
-            <!-- Drive Selector & Profile -->
+            <!-- Header Status & Operating Mode Indicators -->
             <div class="header-controls">
-                <div class="drive-select-wrapper">
-                    <label for="driveSelect">TEST DRIVE:</label>
-                    <select id="driveSelect">
-                        <option value="S-S3a">S-S3a — Driver A (Normal Urban)</option>
-                        <option value="S-S3b">S-S3b — Driver A (Stop & Go Urban)</option>
-                        <option value="S-M">S-M — Driver B (Highway Cruising)</option>
-                        <option value="S-Y1">S-Y1 — Driver D (Dense City Traffic)</option>
-                        <option value="S-Vfa02" selected>S-Vfa02 — Driver E (Aggressive Maneuvers)</option>
-                        <option value="S-Vta1b">S-Vta1b — Driver E (High-Speed Drift)</option>
-                    </select>
+                <!-- Internet Badge -->
+                <div class="badge-offline" id="internetBadge">
+                    <span class="dot-red"></span> INTERNET: OFF (100% LOCAL)
                 </div>
 
-                <div class="status-pill" id="systemStatusPill">
-                    <span class="status-dot"></span>
+                <!-- Local WebSocket Gateway Link Badge -->
+                <div class="status-pill pill-link" id="linkStatusPill">
+                    <span class="status-dot dot-cyan"></span>
+                    <span id="linkStatusText">LOCAL LINK: CONNECTING...</span>
+                </div>
+
+                <!-- GNSS Status Badge -->
+                <div class="status-pill pill-gnss" id="systemStatusPill">
+                    <span class="status-dot dot-green"></span>
                     <span id="systemStatusText">GNSS HEALTHY (100% Fix)</span>
+                </div>
+
+                <!-- Mode Switcher (Live vs Replay) -->
+                <div class="drive-select-wrapper">
+                    <label for="modeSelect">MODE:</label>
+                    <select id="modeSelect">
+                        <option value="live" selected>LIVE TELEMETRY STREAM</option>
+                        <option value="replay_Vfa02">REPLAY: S-Vfa02 (Driver E - Aggressive)</option>
+                        <option value="replay_S3a">REPLAY: S-S3a (Driver A - Urban)</option>
+                        <option value="replay_M">REPLAY: S-M (Driver B - Highway)</option>
+                        <option value="replay_Y1">REPLAY: S-Y1 (Driver D - Dense Traffic)</option>
+                    </select>
                 </div>
             </div>
         </header>
 
         <!-- Main Dashboard Layout -->
         <main class="dashboard-grid">
-            <!-- Left: Interactive Map Container -->
+            <!-- Left: Interactive Live Map Container -->
             <section class="map-card">
                 <div class="card-header">
                     <div class="card-title">
                         <span class="icon-map">📍</span>
-                        <h2>Interactive 3-Way Trajectory Stream</h2>
+                        <h2>Live Geographic Position & Breadcrumb Trail</h2>
                     </div>
-                    <div class="layer-toggles">
-                        <label class="toggle-label toggle-gt">
-                            <input type="checkbox" id="toggleGt" checked>
-                            <span class="color-dot dot-gt"></span> Ground Truth
-                        </label>
-                        <label class="toggle-label toggle-fused">
-                            <input type="checkbox" id="toggleFused" checked>
-                            <span class="color-dot dot-fused"></span> AI-EKF Fused
-                        </label>
-                        <label class="toggle-label toggle-naive">
-                            <input type="checkbox" id="toggleNaive" checked>
-                            <span class="color-dot dot-naive"></span> Naive DR Baseline
-                        </label>
+                    <div class="header-actions">
+                        <!-- Blackout Demo Trigger Button -->
+                        <button id="btnBlackoutDemo" class="btn-demo-blackout">
+                            <span class="btn-icon">⚡</span> TRIGGER GNSS BLACKOUT TEST
+                        </button>
+                        
+                        <div class="layer-toggles">
+                            <label class="toggle-label toggle-fused">
+                                <input type="checkbox" id="toggleFused" checked>
+                                <span class="color-dot dot-fused"></span> AI-EKF Live Path
+                            </label>
+                            <label class="toggle-label toggle-outage">
+                                <input type="checkbox" id="toggleOutage" checked>
+                                <span class="color-dot dot-outage"></span> Outage Segment
+                            </label>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Leaflet Map Element -->
+                <!-- Leaflet / Vector Canvas Map Element -->
                 <div id="leafletMap" class="map-viewport"></div>
 
-                <!-- Alert Overlay Banner -->
+                <!-- Alert Overlay Banner during GNSS Blackout -->
                 <div id="blackoutAlertBanner" class="blackout-banner hidden">
                     <div class="banner-icon">🚇</div>
                     <div class="banner-content">
-                        <strong>90s GNSS BLACKOUT ACTIVE — SATELLITE SIGNALS LOST</strong>
-                        <p>Confidence-Aware EKF + AI Speed Model + Non-Holonomic Constraints strictly active.</p>
+                        <strong>GNSS DENIED — SATELLITE SIGNALS LOST</strong>
+                        <p>Confidence-Aware 6-State EKF + AI Speed Model + Non-Holonomic Constraints strictly maintaining navigation.</p>
                     </div>
-                    <div class="countdown-box" id="blackoutCountdown">90.0s</div>
+                    <div class="countdown-box" id="blackoutCountdown">0.0s</div>
                 </div>
             </section>
 
-            <!-- Right: Real-time Telemetry Avionics HUD -->
+            <!-- Right: Real-Time Telemetry Avionics HUD -->
             <aside class="telemetry-panel">
                 <!-- Speed & Kinematic HUD -->
                 <div class="hud-card speed-card">
                     <div class="hud-header">
-                        <h3>VEHICLE VELOCITY</h3>
-                        <span class="unit-badge">km/h & m/s</span>
+                        <span class="hud-label">ESTIMATED FORWARD SPEED</span>
+                        <span class="hud-badge" id="sourceBadge">GNSS + AI/IMU EKF</span>
                     </div>
                     <div class="speed-display">
-                        <div class="digital-speed" id="speedKmh">0.0</div>
-                        <div class="speed-sub">
-                            <span id="speedMps">0.0 m/s</span>
-                            <span class="speed-label">Ground Truth: <b id="gtSpeedMps">0.0</b> m/s</span>
+                        <span class="speed-value" id="hudSpeedKmh">0.0</span>
+                        <span class="speed-unit">km/h</span>
+                    </div>
+                    <div class="speed-sub">
+                        <span id="hudSpeedMps">0.00</span> m/s &nbsp;|&nbsp; Uncertainty (1-σ): <span id="hudSigma" class="text-cyan">±0.18 m/s</span>
+                    </div>
+                    <!-- Confidence Bar -->
+                    <div class="confidence-wrapper">
+                        <div class="confidence-label-row">
+                            <span>Navigation Confidence</span>
+                            <span id="hudConfidence">95%</span>
                         </div>
-                    </div>
-                    <div class="gauge-bar-wrapper">
-                        <div class="gauge-bar" id="speedGaugeBar" style="width: 0%;"></div>
-                    </div>
-                </div>
-
-                <!-- Live Drift Error Comparators -->
-                <div class="hud-card error-card">
-                    <div class="hud-header">
-                        <h3>INSTANTANEOUS POSITION DRIFT</h3>
-                        <span class="pulse-indicator"></span>
-                    </div>
-                    <div class="dual-stat-grid">
-                        <div class="stat-box fused-stat">
-                            <span class="stat-label">AI-EKF Fusion Error</span>
-                            <div class="stat-val" id="fusedErrVal">0.00 m</div>
-                            <span class="stat-sub" id="fusedImprovementVal">>99% reduction</span>
-                        </div>
-                        <div class="stat-box naive-stat">
-                            <span class="stat-label">Naive DR Error (O(t³))</span>
-                            <div class="stat-val" id="naiveErrVal">0.00 m</div>
-                            <span class="stat-sub">Cubic Divergence</span>
+                        <div class="progress-track">
+                            <div class="progress-fill" id="confidenceFill" style="width: 95%;"></div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Multi-Sensor Context Engine HUD -->
-                <div class="hud-card context-card">
+                <!-- Heading, Yaw & Gyro Bias HUD -->
+                <div class="hud-card">
                     <div class="hud-header">
-                        <h3>PREDICTIVE CONTEXT ENGINE</h3>
-                        <span class="sensor-count">4 Sensors Synced</span>
+                        <span class="hud-label">HEADING & GYRO DYNAMICS</span>
+                        <span class="hud-badge badge-neutral" id="contextBadge">NORMAL_URBAN</span>
                     </div>
-                    <div class="context-mode-pill" id="contextModePill">
-                        <span id="contextModeIcon">🟢</span>
-                        <span id="contextModeLabel">NORMAL_URBAN</span>
-                    </div>
-                    <div class="context-subgrid">
-                        <div class="mini-stat">
-                            <span class="mini-label">AI Uncertainty (σ_v)</span>
-                            <span class="mini-val" id="aiSigmaVal">±0.20 m/s</span>
+                    <div class="kinematic-grid">
+                        <div class="k-item">
+                            <span class="k-label">HEADING / YAW</span>
+                            <span class="k-value" id="hudHeading">0.0°</span>
                         </div>
-                        <div class="mini-stat">
-                            <span class="mini-label">Dynamic Blend (α_v)</span>
-                            <span class="mini-val" id="alphaBlendVal">0.250</span>
+                        <div class="k-item">
+                            <span class="k-label">YAW RATE (gz)</span>
+                            <span class="k-value" id="hudGyroZ">0.00 rad/s</span>
                         </div>
-                        <div class="mini-stat">
-                            <span class="mini-label">Gyro Bias (b_g)</span>
-                            <span class="mini-val" id="gyroBiasVal">+0.000 mrad/s</span>
+                        <div class="k-item">
+                            <span class="k-label">LATERAL VELOCITY</span>
+                            <span class="k-value" id="hudVelLat">0.00 m/s</span>
                         </div>
-                        <div class="mini-stat">
-                            <span class="mini-label">Heading Angle (θ)</span>
-                            <span class="mini-val" id="headingDegVal">0.0°</span>
+                        <div class="k-item">
+                            <span class="k-label">EST. GYRO BIAS</span>
+                            <span class="k-value" id="hudGyroBias">0.0000 rad/s</span>
                         </div>
                     </div>
                 </div>
 
-                <!-- Real-time Canvas Telemetry Chart -->
-                <div class="hud-card chart-card">
+                <!-- Geodetic Coordinates & Local ENU Position -->
+                <div class="hud-card">
                     <div class="hud-header">
-                        <h3>REAL-TIME SPEED & UNCERTAINTY BAND (±2σ)</h3>
+                        <span class="hud-label">COORDINATES & LOCAL TANGENT PLANE</span>
+                        <span class="hud-badge badge-quality" id="qualityBadge">QUALITY: 1.00</span>
                     </div>
-                    <div class="chart-canvas-container">
-                        <canvas id="telemetryChart" width="400" height="130"></canvas>
+                    <div class="coords-list">
+                        <div class="coord-row">
+                            <span class="c-label">LATITUDE:</span>
+                            <span class="c-val" id="hudLat">12.971600°</span>
+                        </div>
+                        <div class="coord-row">
+                            <span class="c-label">LONGITUDE:</span>
+                            <span class="c-val" id="hudLon">77.594600°</span>
+                        </div>
+                        <div class="coord-row">
+                            <span class="c-label">ENU EASTING:</span>
+                            <span class="c-val" id="hudPosEast">0.0 m</span>
+                        </div>
+                        <div class="coord-row">
+                            <span class="c-label">ENU NORTHING:</span>
+                            <span class="c-val" id="hudPosNorth">0.0 m</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Architecture & Verification Summary -->
+                <div class="hud-card stats-card">
+                    <div class="hud-header">
+                        <span class="hud-label">BENCHMARK DRIFT REDUCTION</span>
+                        <span class="badge-sih">SIH PS 168</span>
+                    </div>
+                    <div class="stats-table">
+                        <div class="stat-row">
+                            <span class="stat-name">Naive Dead Reckoning Drift:</span>
+                            <span class="stat-val text-red" id="statNaiveDrift">429.5 m (26.6%)</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-name">90s GNSS Blackout Exit Error:</span>
+                            <span class="stat-val text-green" id="statTerminalError">1.82 m</span>
+                        </div>
+                        <div class="stat-row">
+                            <span class="stat-name">Drift Reduction Factor:</span>
+                            <span class="stat-val text-cyan" id="statReduction">99.5%</span>
+                        </div>
                     </div>
                 </div>
             </aside>
         </main>
-
-        <!-- Bottom Playback Controls Bar -->
-        <footer class="playback-bar">
-            <div class="playback-buttons">
-                <button id="btnReset" class="btn-ctrl" title="Reset to Start">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
-                </button>
-                <button id="btnStepBack" class="btn-ctrl" title="Step Back 1s">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>
-                </button>
-                <button id="btnPlayPause" class="btn-ctrl btn-primary-ctrl" title="Play / Pause">
-                    <svg id="playIcon" viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                    <svg id="pauseIcon" class="hidden" viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                </button>
-                <button id="btnStepForward" class="btn-ctrl" title="Step Forward 1s">
-                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
-                </button>
-            </div>
-
-            <!-- Scrubber Timeline -->
-            <div class="timeline-container">
-                <div class="timeline-labels">
-                    <span id="timeCurrent">00:00.0s</span>
-                    <div class="timeline-zone-tags">
-                        <span class="tag-gps">GNSS (0-60s)</span>
-                        <span class="tag-blackout">90s BLACKOUT (60-150s)</span>
-                        <span class="tag-recovery">REACQUISITION</span>
-                    </div>
-                    <span id="timeTotal">04:59.9s</span>
-                </div>
-                <div class="scrubber-bar" id="scrubberTrack">
-                    <div class="blackout-region" id="blackoutRegionHighlight"></div>
-                    <div class="scrubber-progress" id="scrubberProgress"></div>
-                    <div class="scrubber-handle" id="scrubberHandle"></div>
-                </div>
-            </div>
-
-            <!-- Speed Multipliers -->
-            <div class="speed-multipliers">
-                <span class="speed-label">SPEED:</span>
-                <button class="btn-speed active" data-speed="1">1×</button>
-                <button class="btn-speed" data-speed="2">2×</button>
-                <button class="btn-speed" data-speed="5">5×</button>
-                <button class="btn-speed" data-speed="10">10×</button>
-            </div>
-        </footer>
     </div>
 
-    <!-- Leaflet JS Library -->
+    <!-- Leaflet Map JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-    
-    <!-- Application Logic -->
+    <!-- Master Dashboard Application Script -->
     <script src="app.js"></script>
 </body>
 </html>

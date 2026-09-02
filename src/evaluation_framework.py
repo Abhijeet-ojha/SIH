@@ -1,12 +1,13 @@
 """
 src/evaluation_framework.py
 Comprehensive 5-Level Evaluation Framework for SIH 2026 PS-168:
-- Level 1: ML Speed Regression Metrics (MAE, RMSE, R2, MedAE, P95)
-- Level 2: Uncertainty Calibration (90%/95% Coverage, Mean Width, Calibration Error)
-- Level 3: Drive-Level & Driver-Level Generalization (LODO & LODrO)
-- Level 4: Downstream Navigation (90s Blackout Exit Error, Peak Drift, Trajectory RMSE)
-- Level 5: Mobile Feasibility (Latency ms/window, RAM, Model Size KB)
-Strict Sanity & Leakage Gate enforced before every experiment.
+  - Level 1: ML Speed Regression Metrics (MAE, RMSE, R2, MedAE, P95)
+  - Level 2: Uncertainty Calibration (90%/95% Coverage, Mean Width, Calibration Error)
+  - Level 3: Drive-Level & Driver-Level Generalization (LODO & LODrO)
+  - Level 4: Downstream Navigation (90s Blackout Exit Error, Peak Drift, Trajectory RMSE)
+  - Level 5: Mobile Feasibility (Latency ms/window, RAM, Model Size KB)
+
+Enforces strict 3-way data splits (Train, Isolated Calibration, Held-out Test) and automated leakage gates.
 """
 
 import os
@@ -22,11 +23,15 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from src.feature_engineering import extract_causal_window_features
-from src.speed_model import reconstruct_ai_dr_trajectory
+from core.features.extractor import CausalFeatureExtractor
+from core.features.leakage_guard import verify_feature_matrix_leakage, verify_split_isolation, verify_causality
+from core.models.tabular_models import TabularSpeedModel
+from core.fusion.ekf_6state import run_6state_ekf_fusion
+from core.uncertainty.calibrator import compute_uncertainty_metrics
 from src.naive_dr import NaiveDeadReckoning
-from src.fusion_ekf import run_fusion_pipeline
 from src.metrics import calculate_benchmark_metrics
+from scipy.interpolate import interp1d
+
 
 # ── 1. Strict Sanity & Leakage Gate ──────────────────────────────────────────
 def verify_leakage_gate(
@@ -36,36 +41,23 @@ def verify_leakage_gate(
     y_test: np.ndarray,
     train_drive_names: List[str],
     test_drive_names: List[str],
+    calibration_drive_names: Optional[List[str]] = None,
     train_driver_ids: Optional[List[str]] = None,
     test_driver_ids: Optional[List[str]] = None,
     is_lodro: bool = False
 ):
-    """
-    Automated assertion gate: Fails immediately if any form of data or label leakage is detected.
-    """
-    # 1. No target or spatial coordinate columns in feature matrices
-    banned_cols = ["speed", "pos_x", "pos_y", "heading", "lat", "lon", "gt_speed", "gt_lat", "gt_lon"]
-    for c in X_train.columns:
-        c_lower = c.lower()
-        assert c_lower not in banned_cols, f"LEAKAGE GATE FAILED: Target column '{c}' present in X_train!"
-    for c in X_test.columns:
-        c_lower = c.lower()
-        assert c_lower not in banned_cols, f"LEAKAGE GATE FAILED: Target column '{c}' present in X_test!"
+    """Automated assertion gate: Fails immediately if any data, target, or split leakage is detected."""
+    verify_feature_matrix_leakage(X_train, context_name="X_train")
+    verify_feature_matrix_leakage(X_test, context_name="X_test")
+    verify_split_isolation(
+        train_drive_names=train_drive_names,
+        test_drive_names=test_drive_names,
+        calibration_drive_names=calibration_drive_names,
+        train_driver_ids=train_driver_ids,
+        test_driver_ids=test_driver_ids,
+        is_lodro=is_lodro
+    )
 
-    # 2. No test drive in training drives
-    overlap_drives = set(train_drive_names).intersection(set(test_drive_names))
-    assert len(overlap_drives) == 0, f"LEAKAGE GATE FAILED: Overlapping drives found in train/test: {overlap_drives}"
-
-    # 3. If LODrO (Leave-One-Driver-Out), assert strictly disjoint driver sets
-    if is_lodro and train_driver_ids is not None and test_driver_ids is not None:
-        overlap_drivers = set(train_driver_ids).intersection(set(test_driver_ids))
-        assert len(overlap_drivers) == 0, f"LODrO LEAKAGE GATE FAILED: Overlapping drivers in train/test: {overlap_drivers}"
-
-    # 4. Check shape and finite values
-    assert len(X_train) == len(y_train), "Mismatch between X_train and y_train rows!"
-    assert len(X_test) == len(y_test), "Mismatch between X_test and y_test rows!"
-    assert not np.isnan(y_train).any(), "NaN detected in y_train!"
-    assert not np.isnan(y_test).any(), "NaN detected in y_test!"
 
 # ── 2. Level 1 & Level 2 Metric Calculations ─────────────────────────────────
 def evaluate_ml_speed_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
@@ -79,38 +71,15 @@ def evaluate_ml_speed_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[st
         "p95_error": float(np.percentile(abs_err, 95))
     }
 
+
 def evaluate_uncertainty_calibration(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     y_std: np.ndarray
 ) -> Dict[str, float]:
     """Level 2: Prediction Interval Calibration & Coverage."""
-    # 90% Nominal interval (z = 1.645)
-    lower_90 = np.maximum(0.0, y_pred - 1.645 * y_std)
-    upper_90 = y_pred + 1.645 * y_std
-    in_90 = (y_true >= lower_90) & (y_true <= upper_90)
-    cov_90 = float(np.mean(in_90))
-    width_90 = float(np.mean(upper_90 - lower_90))
+    return compute_uncertainty_metrics(y_true, y_pred, y_std)
 
-    # 95% Nominal interval (z = 1.960)
-    lower_95 = np.maximum(0.0, y_pred - 1.960 * y_std)
-    upper_95 = y_pred + 1.960 * y_std
-    in_95 = (y_true >= lower_95) & (y_true <= upper_95)
-    cov_95 = float(np.mean(in_95))
-    width_95 = float(np.mean(upper_95 - lower_95))
-
-    cal_err_90 = abs(cov_90 - 0.90)
-    cal_err_95 = abs(cov_95 - 0.95)
-
-    return {
-        "coverage_90_pct": cov_90 * 100.0,
-        "mean_width_90_mps": width_90,
-        "cal_error_90": cal_err_90,
-        "coverage_95_pct": cov_95 * 100.0,
-        "mean_width_95_mps": width_95,
-        "cal_error_95": cal_err_95,
-        "mean_sigma_mps": float(np.mean(y_std))
-    }
 
 # ── 3. Level 4: Downstream Navigation Evaluator ──────────────────────────────
 def evaluate_downstream_navigation(
@@ -121,23 +90,65 @@ def evaluate_downstream_navigation(
     blackout_start_sec: float = 60.0,
     blackout_end_sec: Optional[float] = None
 ) -> Dict[str, float]:
-    """Level 4: EKF Downstream GNSS Blackout Navigation."""
+    """Level 4: 6-State EKF Downstream GNSS Blackout Navigation."""
     df = drive_dataset.get_data()
     d_id = drive_dataset.driver_id
     if blackout_end_sec is None:
         blackout_end_sec = min(drive_dataset.duration_sec - 10.0, 150.0)
 
+    t_orig = df["timestamp"].values
+    n = len(df)
+
+    # Dense interpolation of AI speed and uncertainty
+    interp_func = interp1d(t_test, y_pred, kind="linear", bounds_error=False, fill_value=(y_pred[0], y_pred[-1]))
+    v_dense = np.maximum(0.0, interp_func(t_orig))
+
+    interp_std = interp1d(t_test, y_std, kind="linear", bounds_error=False, fill_value=(y_std[0], y_std[-1]))
+    std_dense = np.maximum(0.05, interp_std(t_orig))
+
     init_heading = df["heading"].iloc[0] if "heading" in df.columns else 0.0
     init_speed = df["speed"].iloc[0] if "speed" in df.columns else 0.0
     init_pos = (df["pos_x"].iloc[0], df["pos_y"].iloc[0]) if "pos_x" in df.columns else (0.0, 0.0)
 
-    naive_res = NaiveDeadReckoning(init_heading, init_speed, init_pos).compute(df)
-    ai_dr_res = reconstruct_ai_dr_trajectory(df, t_test, y_pred, v_std=y_std, initial_heading=init_heading, initial_pos=init_pos)
+    # Reconstruct pure AI-DR trajectory
+    dt_arr = np.diff(t_orig, prepend=t_orig[0])
+    dt_arr[0] = dt_arr[1] if n > 1 else 0.1
+    gyro_z = df["gyro_z"].values
 
-    fused_res = run_fusion_pipeline(
+    heading_ai = np.zeros(n)
+    pos_x_ai = np.zeros(n)
+    pos_y_ai = np.zeros(n)
+    heading_ai[0] = init_heading
+    pos_x_ai[0] = init_pos[0]
+    pos_y_ai[0] = init_pos[1]
+
+    for i in range(1, n):
+        dt = dt_arr[i]
+        heading_ai[i] = heading_ai[i-1] + gyro_z[i] * dt
+        v_mid = 0.5 * (v_dense[i-1] + v_dense[i])
+        h_mid = 0.5 * (heading_ai[i-1] + heading_ai[i])
+        pos_x_ai[i] = pos_x_ai[i-1] + v_mid * np.sin(h_mid) * dt
+        pos_y_ai[i] = pos_y_ai[i-1] + v_mid * np.cos(h_mid) * dt
+
+    ai_dr_res = pd.DataFrame({
+        "timestamp": t_orig,
+        "ai_speed": v_dense,
+        "ai_speed_std": std_dense,
+        "ai_heading": heading_ai,
+        "ai_pos_x": pos_x_ai,
+        "ai_pos_y": pos_y_ai
+    })
+    if "pos_x" in df.columns and "pos_y" in df.columns:
+        dx = pos_x_ai - df["pos_x"].values
+        dy = pos_y_ai - df["pos_y"].values
+        ai_dr_res["ai_pos_error_m"] = np.sqrt(dx**2 + dy**2)
+
+    naive_res = NaiveDeadReckoning(init_heading, init_speed, init_pos).compute(df)
+
+    fused_res = run_6state_ekf_fusion(
         df=df,
-        ai_speed=ai_dr_res["ai_speed"].values,
-        ai_speed_std=ai_dr_res["ai_speed_std"].values,
+        ai_speed=v_dense,
+        ai_speed_std=std_dense,
         driver_style="aggressive" if d_id == "E" else "normal",
         blackout_start_sec=blackout_start_sec,
         blackout_end_sec=blackout_end_sec

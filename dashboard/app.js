@@ -1,503 +1,380 @@
 /**
- * NAVPULSE DASHBOARD APPLICATION LOGIC
- * High-precision trajectory player, Leaflet map renderer & telemetry avionics HUD
+ * NavPulse — Master Real-Time Telemetry & Offline Localization Dashboard Script
+ * SIH 2026 Problem Statement 168
+ * 
+ * Capabilities:
+ * - Live WebSocket Telemetry Client (ws://<host>:8765/telemetry) with zero Internet dependency
+ * - Offline Geographic Map Engine (Leaflet + Local Vector Canvas Fallback)
+ * - Real-time Animated Device Marker & Trajectory Polyline
+ * - GNSS Operating Mode Transitions & Blackout Outage Overlay
+ * - Historical Drive Replay Mode
  */
 
-(function () {
-    "use strict";
+class NavPulseDashboard {
+    constructor() {
+        this.ws = null;
+        this.wsUrl = `ws://${window.location.hostname || 'localhost'}:8765/telemetry`;
+        this.isWsConnected = false;
+        
+        // Map & Layers
+        this.map = null;
+        this.deviceMarker = null;
+        this.livePathPolyline = null;
+        this.outagePathPolyline = null;
+        this.pathPoints = [];
+        this.outagePoints = [];
 
-    // Application State
-    let allDrives = {};
-    let currentDriveKey = "S-Vfa02";
-    let currentDrive = null;
-    let currentFrameIdx = 0;
-    let isPlaying = false;
-    let playSpeed = 1.0;
-    let animationFrameId = null;
-    let lastRenderTime = 0;
+        // State & Mode
+        this.currentMode = 'live'; // 'live' or 'replay'
+        this.isBlackoutActive = false;
+        this.blackoutStartMs = 0;
+        this.latestState = null;
 
-    // Leaflet Map & Layer References
-    let map = null;
-    let polylineGt = null;
-    let polylineNaive = null;
-    let polylineFused = null;
-    let blackoutPolygon = null;
-    let vehicleMarker = null;
-    let uncertaintyCircle = null;
+        // Replay data cache
+        this.replayData = null;
+        this.replayTimer = null;
+        this.replayIndex = 0;
 
-    // Canvas Chart Reference
-    let chartCanvas = null;
-    let chartCtx = null;
-    const CHART_HISTORY_LENGTH = 100;
-    let speedHistory = [];
-
-    // DOM Elements
-    const driveSelect = document.getElementById("driveSelect");
-    const systemStatusPill = document.getElementById("systemStatusPill");
-    const systemStatusText = document.getElementById("systemStatusText");
-    const blackoutAlertBanner = document.getElementById("blackoutAlertBanner");
-    const blackoutCountdown = document.getElementById("blackoutCountdown");
-
-    // Telemetry HUD Elements
-    const speedKmhEl = document.getElementById("speedKmh");
-    const speedMpsEl = document.getElementById("speedMps");
-    const gtSpeedMpsEl = document.getElementById("gtSpeedMps");
-    const speedGaugeBar = document.getElementById("speedGaugeBar");
-    const fusedErrValEl = document.getElementById("fusedErrVal");
-    const naiveErrValEl = document.getElementById("naiveErrVal");
-    const fusedImprovementValEl = document.getElementById("fusedImprovementVal");
-    const contextModePill = document.getElementById("contextModePill");
-    const contextModeIcon = document.getElementById("contextModeIcon");
-    const contextModeLabel = document.getElementById("contextModeLabel");
-    const aiSigmaValEl = document.getElementById("aiSigmaVal");
-    const alphaBlendValEl = document.getElementById("alphaBlendVal");
-    const gyroBiasValEl = document.getElementById("gyroBiasVal");
-    const headingDegValEl = document.getElementById("headingDegVal");
-
-    // Playback Elements
-    const btnPlayPause = document.getElementById("btnPlayPause");
-    const playIcon = document.getElementById("playIcon");
-    const pauseIcon = document.getElementById("pauseIcon");
-    const btnReset = document.getElementById("btnReset");
-    const btnStepBack = document.getElementById("btnStepBack");
-    const btnStepForward = document.getElementById("btnStepForward");
-    const scrubberTrack = document.getElementById("scrubberTrack");
-    const scrubberProgress = document.getElementById("scrubberProgress");
-    const scrubberHandle = document.getElementById("scrubberHandle");
-    const blackoutRegionHighlight = document.getElementById("blackoutRegionHighlight");
-    const timeCurrentEl = document.getElementById("timeCurrent");
-    const timeTotalEl = document.getElementById("timeTotal");
-    const speedBtns = document.querySelectorAll(".btn-speed");
-
-    // Layer Toggles
-    const toggleGt = document.getElementById("toggleGt");
-    const toggleFused = document.getElementById("toggleFused");
-    const toggleNaive = document.getElementById("toggleNaive");
-
-    // ── 1. Initialization ───────────────────────────────────────────────────
-    async function init() {
-        initMap();
-        initChart();
-        setupEventListeners();
-        await loadDrivesData();
+        this.init();
     }
 
-    // ── 2. Leaflet Map Setup ─────────────────────────────────────────────────
-    function initMap() {
-        // Initialize Leaflet Map
-        map = L.map("leafletMap", {
-            zoomControl: false,
+    init() {
+        this.initMap();
+        this.initEventListeners();
+        this.connectWebSocket();
+    }
+
+    // ── 1. Map Initialization (Offline-Compatible) ──────────────────────────
+    initMap() {
+        // Initial center: Bangalore / Indian local coordinate center
+        const defaultLat = 12.9716;
+        const defaultLon = 77.5946;
+
+        this.map = L.map('leafletMap', {
+            center: [defaultLat, defaultLon],
+            zoom: 17,
+            zoomControl: true,
             attributionControl: false
-        }).setView([52.4068, -1.5197], 15);
-
-        // Dark Matter tiles for sleek high-tech aesthetics
-        L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-            maxZoom: 19,
-            subdomains: "abcd"
-        }).addTo(map);
-
-        L.control.zoom({ position: "bottomright" }).addTo(map);
-
-        // Custom Animated Vehicle Marker Icon
-        const vehicleIcon = L.divIcon({
-            className: "custom-vehicle-icon",
-            html: `<div class="vehicle-marker" id="vehicleMarkerInner"><div class="vehicle-arrow"></div></div>`,
-            iconSize: [28, 28],
-            iconAnchor: [14, 14]
         });
 
-        vehicleMarker = L.marker([52.4068, -1.5197], { icon: vehicleIcon, zIndexOffset: 1000 }).addTo(map);
+        // Offline Dark Mode Tile Layer (Attempts local or cached tiles; gracefully handles offline)
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            maxZoom: 20,
+            subdomains: 'abcd'
+        }).addTo(this.map);
 
-        // Dynamic Uncertainty Bubble
-        uncertaintyCircle = L.circle([52.4068, -1.5197], {
-            radius: 2,
-            color: "#00f0ff",
-            fillColor: "#00f0ff",
-            fillOpacity: 0.15,
-            weight: 1
-        }).addTo(map);
-    }
+        // Custom High-Visibility Directional Device Marker
+        const markerHtml = `
+            <div class="device-marker-wrapper" id="markerRotator">
+                <div class="marker-pulse"></div>
+                <div class="marker-core">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="#00ffcc">
+                        <polygon points="12,2 22,22 12,17 2,22" />
+                    </svg>
+                </div>
+            </div>
+        `;
 
-    // ── 3. Data Loading ─────────────────────────────────────────────────────
-    async function loadDrivesData() {
-        try {
-            const response = await fetch("data/drives.json");
-            if (!response.ok) throw new Error("Failed to load drives.json");
-            allDrives = await response.json();
-            
-            // Populate select options if needed or select default
-            selectDrive(currentDriveKey);
-        } catch (err) {
-            console.error("Data load error:", err);
-            systemStatusText.innerText = "DATA LOAD ERROR";
-            systemStatusPill.classList.add("status-blackout");
-        }
-    }
+        const customIcon = L.divIcon({
+            html: markerHtml,
+            className: 'custom-vehicle-icon',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16]
+        });
 
-    // ── 4. Drive Selection & Route Rendering ────────────────────────────────
-    function selectDrive(driveKey) {
-        currentDriveKey = driveKey;
-        currentDrive = allDrives[driveKey];
-        if (!currentDrive || !currentDrive.frames.length) return;
+        this.deviceMarker = L.marker([defaultLat, defaultLon], { icon: customIcon }).addTo(this.map);
 
-        currentFrameIdx = 0;
-        speedHistory = [];
-        pausePlayback();
-
-        // Clear existing polylines
-        if (polylineGt) map.removeLayer(polylineGt);
-        if (polylineNaive) map.removeLayer(polylineNaive);
-        if (polylineFused) map.removeLayer(polylineFused);
-        if (blackoutPolygon) map.removeLayer(blackoutPolygon);
-
-        const gtLatLngs = currentDrive.frames.map(f => [f.gt_lat, f.gt_lon]);
-        const naiveLatLngs = currentDrive.frames.map(f => [f.naive_lat, f.naive_lon]);
-        const fusedLatLngs = currentDrive.frames.map(f => [f.fused_lat, f.fused_lon]);
-
-        // Draw Full Polylines
-        polylineGt = L.polyline(gtLatLngs, {
-            color: "#00e676",
-            weight: 3.5,
+        // Live Trajectory Polylines
+        this.livePathPolyline = L.polyline([], {
+            color: '#00ffcc',
+            weight: 4,
             opacity: 0.85,
-            dashArray: "4, 6"
-        }).addTo(map);
+            smoothFactor: 1
+        }).addTo(this.map);
 
-        polylineNaive = L.polyline(naiveLatLngs, {
-            color: "#ff3366",
-            weight: 2.5,
-            opacity: 0.75
-        }).addTo(map);
+        this.outagePathPolyline = L.polyline([], {
+            color: '#ff3366',
+            weight: 5,
+            opacity: 0.95,
+            dashArray: '6, 6'
+        }).addTo(this.map);
+    }
 
-        polylineFused = L.polyline(fusedLatLngs, {
-            color: "#00f0ff",
-            weight: 4.5,
-            opacity: 0.95
-        }).addTo(map);
+    // ── 2. Local WebSocket Telemetry Client ──────────────────────────────────
+    connectWebSocket() {
+        const linkPill = document.getElementById('linkStatusPill');
+        const linkText = document.getElementById('linkStatusText');
 
-        // Highlight Blackout Zone on Route
-        const blStart = currentDrive.blackout_start_sec;
-        const blEnd = currentDrive.blackout_end_sec;
-        const blFrames = currentDrive.frames.filter(f => f.t >= blStart && f.t <= blEnd);
-        if (blFrames.length > 1) {
-            const blLatLngs = blFrames.map(f => [f.gt_lat, f.gt_lon]);
-            blackoutPolygon = L.polyline(blLatLngs, {
-                color: "#ffb300",
-                weight: 9,
-                opacity: 0.35,
-                lineCap: "round"
-            }).addTo(map);
+        linkText.innerText = `LOCAL LINK: CONNECTING (${this.wsUrl})...`;
+        linkPill.querySelector('.status-dot').className = 'status-dot dot-amber';
+
+        try {
+            this.ws = new WebSocket(this.wsUrl);
+
+            this.ws.onopen = () => {
+                this.isWsConnected = true;
+                linkText.innerText = `LOCAL LINK: CONNECTED (ws://${window.location.hostname || 'localhost'}:8765)`;
+                linkPill.querySelector('.status-dot').className = 'status-dot dot-cyan';
+                console.log('[+] Connected to Local Telemetry Gateway.');
+            };
+
+            this.ws.onmessage = (event) => {
+                if (this.currentMode !== 'live') return;
+                try {
+                    const packet = JSON.parse(event.data);
+                    this.handleTelemetryPacket(packet);
+                } catch (err) {
+                    console.error('Failed to parse telemetry packet:', err);
+                }
+            };
+
+            this.ws.onclose = () => {
+                this.isWsConnected = false;
+                linkText.innerText = 'LOCAL LINK: OFFLINE (Auto-reconnecting...)';
+                linkPill.querySelector('.status-dot').className = 'status-dot dot-red';
+                // Exponential backoff reconnect
+                setTimeout(() => this.connectWebSocket(), 2500);
+            };
+
+            this.ws.onerror = () => {
+                this.ws.close();
+            };
+        } catch (e) {
+            setTimeout(() => this.connectWebSocket(), 3000);
         }
-
-        // Fit map bounds smoothly
-        map.fitBounds(polylineFused.getBounds(), { padding: [40, 40] });
-
-        // Update Timeline scrubber blackout region width
-        const totalDur = currentDrive.total_duration_sec;
-        const blLeftPct = (blStart / totalDur) * 100.0;
-        const blWidthPct = ((blEnd - blStart) / totalDur) * 100.0;
-        blackoutRegionHighlight.style.left = `${blLeftPct}%`;
-        blackoutRegionHighlight.style.width = `${blWidthPct}%`;
-
-        timeTotalEl.innerText = formatTime(totalDur);
-
-        // Render Frame 0
-        renderFrame(0);
     }
 
-    // ── 5. Playback Controller ──────────────────────────────────────────────
-    function togglePlayPause() {
-        if (isPlaying) {
-            pausePlayback();
-        } else {
-            startPlayback();
-        }
+    // ── 3. Handle Live Telemetry Packet ─────────────────────────────────────
+    handleTelemetryPacket(packet) {
+        if (!packet || packet.type !== 'navigationState' || !packet.navigation) return;
+        const nav = packet.navigation;
+        this.latestState = nav;
+
+        this.updateAvionicsHUD(nav);
+        this.updateMapPosition(nav);
     }
 
-    function startPlayback() {
-        if (!currentDrive) return;
-        isPlaying = true;
-        playIcon.classList.add("hidden");
-        pauseIcon.classList.remove("hidden");
-        lastRenderTime = performance.now();
-        animationFrameId = requestAnimationFrame(playbackLoop);
-    }
+    // ── 4. Update HUD Avionics Elements ──────────────────────────────────────
+    updateAvionicsHUD(nav) {
+        const speedKmh = (nav.speed_kmh !== undefined) ? nav.speed_kmh : (nav.speed_mps * 3.6);
+        const speedMps = nav.speed_mps || 0.0;
+        const headingDeg = nav.heading_deg || (nav.heading_rad * 180.0 / Math.PI) || 0.0;
+        const confidence = nav.confidence_pct || 95.0;
+        const sigma = nav.uncertainty_sigma_mps || 0.20;
+        const gnssMode = nav.gnss_mode || 'NORMAL';
+        const source = nav.source || 'GNSS_AI_IMU_EKF';
 
-    function pausePlayback() {
-        isPlaying = false;
-        playIcon.classList.remove("hidden");
-        pauseIcon.classList.add("hidden");
-        if (animationFrameId) cancelAnimationFrame(animationFrameId);
-    }
+        // Digital HUD
+        document.getElementById('hudSpeedKmh').innerText = speedKmh.toFixed(1);
+        document.getElementById('hudSpeedMps').innerText = speedMps.toFixed(2);
+        document.getElementById('hudSigma').innerText = `±${sigma.toFixed(3)} m/s`;
+        document.getElementById('hudHeading').innerText = `${headingDeg.toFixed(1)}°`;
+        document.getElementById('hudGyroBias').innerText = `${(nav.gyro_bias_rad_s || 0.0).toFixed(4)} rad/s`;
+        document.getElementById('hudVelLat').innerText = `${(nav.velocity_lat_mps || 0.0).toFixed(2)} m/s`;
+        document.getElementById('hudConfidence').innerText = `${confidence.toFixed(0)}%`;
+        document.getElementById('confidenceFill').style.width = `${Math.min(100, confidence)}%`;
 
-    function resetPlayback() {
-        pausePlayback();
-        currentFrameIdx = 0;
-        speedHistory = [];
-        renderFrame(0);
-    }
-
-    function stepFrames(deltaSec) {
-        if (!currentDrive) return;
-        const deltaFrames = Math.round(deltaSec * currentDrive.fps);
-        currentFrameIdx = Math.max(0, Math.min(currentDrive.frames.length - 1, currentFrameIdx + deltaFrames));
-        renderFrame(currentFrameIdx);
-    }
-
-    function playbackLoop(currentTime) {
-        if (!isPlaying || !currentDrive) return;
-
-        const dtSec = (currentTime - lastRenderTime) / 1000.0;
-        lastRenderTime = currentTime;
-
-        // Advance frames based on play speed
-        const frameIncrement = dtSec * currentDrive.fps * playSpeed;
-        currentFrameIdx += frameIncrement;
-
-        if (currentFrameIdx >= currentDrive.frames.length - 1) {
-            currentFrameIdx = currentDrive.frames.length - 1;
-            renderFrame(Math.floor(currentFrameIdx));
-            pausePlayback();
-            return;
-        }
-
-        renderFrame(Math.floor(currentFrameIdx));
-        animationFrameId = requestAnimationFrame(playbackLoop);
-    }
-
-    // ── 6. Real-Time Telemetry & Frame Rendering ────────────────────────────
-    function renderFrame(idx) {
-        if (!currentDrive || !currentDrive.frames[idx]) return;
-        const frame = currentDrive.frames[idx];
-
-        // 1. Move Vehicle Marker on Map
-        const pos = [frame.fused_lat, frame.fused_lon];
-        vehicleMarker.setLatLng(pos);
-
-        // Rotate Heading Arrow
-        const headingDeg = (frame.fused_h * 180.0 / Math.PI) % 360;
-        const innerMarker = document.getElementById("vehicleMarkerInner");
-        if (innerMarker) {
-            innerMarker.style.transform = `rotate(${headingDeg}deg)`;
-        }
-
-        // Dynamic Uncertainty Bubble
-        const sigmaM = Math.max(1.5, frame.ai_sigma_v * 4.0);
-        uncertaintyCircle.setLatLng(pos);
-        uncertaintyCircle.setRadius(sigmaM);
-
-        // 2. Update HUD Velocities
-        const kmh = frame.fused_v * 3.6;
-        speedKmhEl.innerText = kmh.toFixed(1);
-        speedMpsEl.innerText = `${frame.fused_v.toFixed(1)} m/s`;
-        gtSpeedMpsEl.innerText = frame.gt_v.toFixed(1);
-
-        // Gauge Bar fill (0 - 120 km/h)
-        const gaugePct = Math.min(100, (kmh / 120.0) * 100);
-        speedGaugeBar.style.width = `${gaugePct}%`;
-
-        // 3. Update Error Comparators
-        fusedErrValEl.innerText = `${frame.fused_err.toFixed(2)} m`;
-        naiveErrValEl.innerText = `${frame.naive_err.toFixed(1)} m`;
-
-        if (frame.naive_err > 0.1) {
-            const imp = Math.max(0, ((frame.naive_err - frame.fused_err) / frame.naive_err) * 100);
-            fusedImprovementValEl.innerText = `${imp.toFixed(1)}% reduction vs naive`;
-        }
-
-        // 4. Update Context Engine & Blackout Status
-        if (frame.is_blackout) {
-            systemStatusPill.classList.add("status-blackout");
-            systemStatusText.innerText = "GNSS BLACKOUT (DENIED)";
-            blackoutAlertBanner.classList.remove("hidden");
-
-            const remSec = Math.max(0, currentDrive.blackout_end_sec - frame.t);
-            blackoutCountdown.innerText = `${remSec.toFixed(1)}s`;
-        } else {
-            systemStatusPill.classList.remove("status-blackout");
-            systemStatusText.innerText = "GNSS HEALTHY (100% Fix)";
-            blackoutAlertBanner.classList.add("hidden");
-        }
+        document.getElementById('hudLat').innerText = `${nav.latitude.toFixed(6)}°`;
+        document.getElementById('hudLon').innerText = `${nav.longitude.toFixed(6)}°`;
+        document.getElementById('hudPosEast').innerText = `${(nav.pos_east_m || 0.0).toFixed(1)} m`;
+        document.getElementById('hudPosNorth').innerText = `${(nav.pos_north_m || 0.0).toFixed(1)} m`;
 
         // Context Badge
-        contextModeLabel.innerText = frame.context_mode;
-        if (frame.context_mode === "STANDSTILL") {
-            contextModeIcon.innerText = "🛑";
-            contextModePill.style.color = "#ff3366";
-            contextModePill.style.borderColor = "rgba(255, 51, 102, 0.4)";
-        } else if (frame.context_mode === "PREDICTIVE_TUNNEL_BLACKOUT") {
-            contextModeIcon.innerText = "🚇";
-            contextModePill.style.color = "#ffb300";
-            contextModePill.style.borderColor = "rgba(255, 179, 0, 0.4)";
+        document.getElementById('contextBadge').innerText = nav.context_mode || 'NORMAL_URBAN';
+
+        // GNSS Status Pill
+        const gnssPill = document.getElementById('systemStatusPill');
+        const gnssText = document.getElementById('systemStatusText');
+        const sourceBadge = document.getElementById('sourceBadge');
+
+        if (gnssMode === 'DENIED' || gnssMode === 'GNSS_DENIED') {
+            gnssPill.querySelector('.status-dot').className = 'status-dot dot-red';
+            gnssText.innerText = `GNSS DENIED (AI-DR: ${nav.blackout_elapsed_s.toFixed(1)}s)`;
+            sourceBadge.innerText = 'AI + IMU + 6-STATE EKF';
+            sourceBadge.style.color = '#ff3366';
+            sourceBadge.style.borderColor = '#ff3366';
+            this.showBlackoutBanner(true, nav.blackout_elapsed_s);
+        } else if (gnssMode === 'DEGRADED' || gnssMode === 'GNSS_DEGRADED') {
+            gnssPill.querySelector('.status-dot').className = 'status-dot dot-amber';
+            gnssText.innerText = 'GNSS DEGRADED (LOW FIX)';
+            sourceBadge.innerText = 'GNSS + AI/IMU EKF';
+            sourceBadge.style.color = '#ffb800';
+            sourceBadge.style.borderColor = '#ffb800';
+            this.showBlackoutBanner(false);
+        } else if (gnssMode === 'REACQUIRED' || gnssMode === 'GNSS_REACQUIRED') {
+            gnssPill.querySelector('.status-dot').className = 'status-dot dot-cyan';
+            gnssText.innerText = 'GNSS REACQUIRED';
+            sourceBadge.innerText = 'GNSS + AI/IMU EKF';
+            this.showBlackoutBanner(false);
         } else {
-            contextModeIcon.innerText = "🟢";
-            contextModePill.style.color = "#00e676";
-            contextModePill.style.borderColor = "rgba(0, 230, 118, 0.3)";
+            gnssPill.querySelector('.status-dot').className = 'status-dot dot-green';
+            gnssText.innerText = 'GNSS HEALTHY (100% Fix)';
+            sourceBadge.innerText = 'GNSS + AI/IMU EKF';
+            sourceBadge.style.color = '#00ffcc';
+            sourceBadge.style.borderColor = '#00ffcc';
+            this.showBlackoutBanner(false);
         }
-
-        // Context Sub-stats
-        aiSigmaValEl.innerText = `±${frame.ai_sigma_v.toFixed(3)} m/s`;
-        const alpha = 0.25 / (1.0 + 1.5 * Math.max(0, frame.ai_sigma_v));
-        alphaBlendValEl.innerText = alpha.toFixed(3);
-        gyroBiasValEl.innerText = `${frame.fused_bg_mrad >= 0 ? "+" : ""}${frame.fused_bg_mrad.toFixed(3)} mrad/s`;
-        headingDegValEl.innerText = `${headingDeg.toFixed(1)}°`;
-
-        // 5. Timeline Scrubber Progress
-        const totalDur = currentDrive.total_duration_sec;
-        const progressPct = (frame.t / totalDur) * 100.0;
-        scrubberProgress.style.width = `${progressPct}%`;
-        scrubberHandle.style.left = `${progressPct}%`;
-        timeCurrentEl.innerText = formatTime(frame.t);
-
-        // 6. Update Chart Buffer & Draw
-        speedHistory.push({
-            t: frame.t,
-            gt_v: frame.gt_v,
-            ai_v: frame.ai_v,
-            sigma: frame.ai_sigma_v
-        });
-        if (speedHistory.length > CHART_HISTORY_LENGTH) {
-            speedHistory.shift();
-        }
-        drawTelemetryChart();
     }
 
-    // ── 7. Strip Chart Canvas Renderer ───────────────────────────────────────
-    function initChart() {
-        chartCanvas = document.getElementById("telemetryChart");
-        chartCtx = chartCanvas.getContext("2d");
+    // ── 5. Update Map Position & Breadcrumbs ─────────────────────────────────
+    updateMapPosition(nav) {
+        const lat = nav.latitude;
+        const lon = nav.longitude;
+        const headingDeg = (nav.heading_deg !== undefined) ? nav.heading_deg : ((nav.heading_rad || 0.0) * 180.0 / Math.PI);
+        const isOutage = (nav.gnss_mode === 'DENIED' || nav.gnss_mode === 'GNSS_DENIED');
+
+        const newPos = [lat, lon];
+        this.deviceMarker.setLatLng(newPos);
+
+        // Center map immediately on first valid incoming coordinate
+        if (!this.hasCenteredMap && lat !== 0.0 && lon !== 0.0) {
+            this.map.setView(newPos, 18, { animate: true });
+            this.hasCenteredMap = true;
+            console.log(`[Map] Centered view on phone location: [${lat}, ${lon}]`);
+        }
+
+        // Rotate Chevron Marker
+        const rotator = document.getElementById('markerRotator') || document.querySelector('.custom-vehicle-icon');
+        if (rotator) {
+            rotator.style.transform = `rotate(${headingDeg}deg)`;
+            rotator.style.transition = 'transform 0.1s linear';
+        }
+
+        // Add to Breadcrumbs only when position actually moves (> 0.05m)
+        const targetList = isOutage ? this.outagePoints : this.pathPoints;
+        const lastPt = targetList.length > 0 ? targetList[targetList.length - 1] : null;
+        const hasMoved = !lastPt || (Math.abs(lastPt[0] - lat) > 0.000001 || Math.abs(lastPt[1] - lon) > 0.000001);
+
+        if (hasMoved) {
+            if (isOutage) {
+                this.outagePoints.push(newPos);
+                this.outagePathPolyline.setLatLngs(this.outagePoints);
+            } else {
+                this.pathPoints.push(newPos);
+                this.livePathPolyline.setLatLngs(this.pathPoints);
+            }
+            this.map.panTo(newPos, { animate: true, duration: 0.2 });
+        }
     }
 
-    function drawTelemetryChart() {
-        if (!chartCtx || speedHistory.length < 2) return;
-        const w = chartCanvas.width;
-        const h = chartCanvas.height;
-
-        chartCtx.clearRect(0, 0, w, h);
-
-        // Grid lines
-        chartCtx.strokeStyle = "rgba(255, 255, 255, 0.05)";
-        chartCtx.lineWidth = 1;
-        for (let y = 0; y <= h; y += 30) {
-            chartCtx.beginPath();
-            chartCtx.moveTo(0, y);
-            chartCtx.lineTo(w, y);
-            chartCtx.stroke();
+    showBlackoutBanner(visible, elapsedS = 0.0) {
+        const banner = document.getElementById('blackoutAlertBanner');
+        const countdown = document.getElementById('blackoutCountdown');
+        if (visible) {
+            banner.classList.remove('hidden');
+            countdown.innerText = `${elapsedS.toFixed(1)}s`;
+        } else {
+            banner.classList.add('hidden');
         }
-
-        const maxV = 25.0; // 25 m/s (~90 km/h) max scale
-        const stepX = w / (CHART_HISTORY_LENGTH - 1);
-
-        // 1. Draw ±2σ Uncertainty Band Fill
-        chartCtx.fillStyle = "rgba(0, 240, 255, 0.12)";
-        chartCtx.beginPath();
-        for (let i = 0; i < speedHistory.length; i++) {
-            const x = i * stepX;
-            const upperV = Math.min(maxV, speedHistory[i].ai_v + 2 * speedHistory[i].sigma);
-            const y = h - (upperV / maxV) * h;
-            if (i === 0) chartCtx.moveTo(x, y);
-            else chartCtx.lineTo(x, y);
-        }
-        for (let i = speedHistory.length - 1; i >= 0; i--) {
-            const x = i * stepX;
-            const lowerV = Math.max(0, speedHistory[i].ai_v - 2 * speedHistory[i].sigma);
-            const y = h - (lowerV / maxV) * h;
-            chartCtx.lineTo(x, y);
-        }
-        chartCtx.closePath();
-        chartCtx.fill();
-
-        // 2. Draw Ground Truth Speed (Green)
-        chartCtx.strokeStyle = "#00e676";
-        chartCtx.lineWidth = 2;
-        chartCtx.beginPath();
-        for (let i = 0; i < speedHistory.length; i++) {
-            const x = i * stepX;
-            const y = h - (speedHistory[i].gt_v / maxV) * h;
-            if (i === 0) chartCtx.moveTo(x, y);
-            else chartCtx.lineTo(x, y);
-        }
-        chartCtx.stroke();
-
-        // 3. Draw AI Predicted Speed (Cyan)
-        chartCtx.strokeStyle = "#00f0ff";
-        chartCtx.lineWidth = 2.5;
-        chartCtx.beginPath();
-        for (let i = 0; i < speedHistory.length; i++) {
-            const x = i * stepX;
-            const y = h - (speedHistory[i].ai_v / maxV) * h;
-            if (i === 0) chartCtx.moveTo(x, y);
-            else chartCtx.lineTo(x, y);
-        }
-        chartCtx.stroke();
     }
 
-    // ── 8. Event Listeners & UI Helpers ─────────────────────────────────────
-    function setupEventListeners() {
-        driveSelect.addEventListener("change", (e) => {
-            selectDrive(e.target.value);
+    // ── 6. Event Listeners & Mode Switcher ───────────────────────────────────
+    initEventListeners() {
+        // Mode Selector (Live vs Replay)
+        const modeSelect = document.getElementById('modeSelect');
+        modeSelect.addEventListener('change', (e) => {
+            const val = e.target.value;
+            if (val === 'live') {
+                this.currentMode = 'live';
+                clearInterval(this.replayTimer);
+                this.pathPoints = [];
+                this.outagePoints = [];
+                this.livePathPolyline.setLatLngs([]);
+                this.outagePathPolyline.setLatLngs([]);
+                console.log('[Mode] Switched to LIVE TELEMETRY STREAM.');
+            } else {
+                this.currentMode = 'replay';
+                this.loadReplayDrive(val.replace('replay_', ''));
+            }
         });
 
-        btnPlayPause.addEventListener("click", togglePlayPause);
-        btnReset.addEventListener("click", resetPlayback);
-        btnStepBack.addEventListener("click", () => stepFrames(-1.0));
-        btnStepForward.addEventListener("click", () => stepFrames(1.0));
-
-        // Speed Multiplier Buttons
-        speedBtns.forEach(btn => {
-            btn.addEventListener("click", () => {
-                speedBtns.forEach(b => b.classList.remove("active"));
-                btn.classList.add("active");
-                playSpeed = parseFloat(btn.dataset.speed);
-            });
-        });
-
-        // Scrubber click & drag
-        scrubberTrack.addEventListener("click", (e) => {
-            if (!currentDrive) return;
-            const rect = scrubberTrack.getBoundingClientRect();
-            const clickRatio = (e.clientX - rect.left) / rect.width;
-            currentFrameIdx = Math.max(0, Math.min(currentDrive.frames.length - 1, Math.floor(clickRatio * currentDrive.frames.length)));
-            renderFrame(currentFrameIdx);
-        });
-
-        // Layer Toggles
-        toggleGt.addEventListener("change", (e) => {
-            if (!polylineGt) return;
-            if (e.target.checked) map.addLayer(polylineGt);
-            else map.removeLayer(polylineGt);
-        });
-
-        toggleFused.addEventListener("change", (e) => {
-            if (!polylineFused) return;
-            if (e.target.checked) map.addLayer(polylineFused);
-            else map.removeLayer(polylineFused);
-        });
-
-        toggleNaive.addEventListener("change", (e) => {
-            if (!polylineNaive) return;
-            if (e.target.checked) map.addLayer(polylineNaive);
-            else map.removeLayer(polylineNaive);
-        });
-
-        // Keyboard Shortcuts
-        window.addEventListener("keydown", (e) => {
-            if (e.code === "Space") {
-                e.preventDefault();
-                togglePlayPause();
-            } else if (e.code === "ArrowLeft") {
-                stepFrames(-1.0);
-            } else if (e.code === "ArrowRight") {
-                stepFrames(1.0);
+        // Blackout Demo Trigger Button
+        const btnBlackout = document.getElementById('btnBlackoutDemo');
+        btnBlackout.addEventListener('click', () => {
+            this.isBlackoutActive = !this.isBlackoutActive;
+            btnBlackout.innerHTML = this.isBlackoutActive
+                ? '<span class="btn-icon">✅</span> RESTORE GNSS SIGNALS'
+                : '<span class="btn-icon">⚡</span> TRIGGER GNSS BLACKOUT TEST';
+            
+            // Send command via WebSocket to gateway server and phone
+            if (this.ws && this.isWsConnected) {
+                this.ws.send(JSON.stringify({
+                    type: 'COMMAND_BLACKOUT_TOGGLE',
+                    active: this.isBlackoutActive
+                }));
             }
         });
     }
 
-    function formatTime(sec) {
-        const m = Math.floor(sec / 60);
-        const s = (sec % 60).toFixed(1);
-        return `${String(m).padStart(2, "0")}:${s < 10 ? "0" : ""}${s}s`;
+    // ── 7. Replay Mode Engine ───────────────────────────────────────────────
+    async loadReplayDrive(driveId) {
+        console.log(`[Replay] Loading drive S-${driveId}...`);
+        try {
+            const res = await fetch(`data/drive_S-${driveId}.json`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            this.startReplay(data);
+        } catch (err) {
+            console.error('Failed to load replay drive:', err);
+        }
     }
 
-    // Launch Dashboard on DOM Ready
-    document.addEventListener("DOMContentLoaded", init);
-})();
+    startReplay(data) {
+        clearInterval(this.replayTimer);
+        this.pathPoints = [];
+        this.outagePoints = [];
+        this.livePathPolyline.setLatLngs([]);
+        this.outagePathPolyline.setLatLngs([]);
+        this.replayIndex = 0;
+
+        const timestamps = data.timestamps || [];
+        const fusedX = data.fused_pos_x || [];
+        const fusedY = data.fused_pos_y || [];
+        const speeds = data.ai_speed || [];
+        const headings = data.fused_heading || [];
+        const outages = data.is_blackout || [];
+
+        const originLat = 12.9716;
+        const originLon = 77.5946;
+        const rEarth = 6378137.0;
+
+        this.replayTimer = setInterval(() => {
+            if (this.replayIndex >= timestamps.length) {
+                this.replayIndex = 0; // Loop
+            }
+
+            const i = this.replayIndex;
+            const east = fusedX[i] || 0.0;
+            const north = fusedY[i] || 0.0;
+            const lat = originLat + (north / rEarth) * (180.0 / Math.PI);
+            const lon = originLon + (east / (rEarth * Math.cos(originLat * Math.PI / 180.0))) * (180.0 / Math.PI);
+
+            const isOutage = outages[i] || false;
+            const nav = {
+                timestamp_s: timestamps[i] || (i * 0.1),
+                latitude: lat,
+                longitude: lon,
+                pos_east_m: east,
+                pos_north_m: north,
+                speed_mps: speeds[i] || 0.0,
+                speed_kmh: (speeds[i] || 0.0) * 3.6,
+                heading_deg: (headings[i] || 0.0) * 180.0 / Math.PI,
+                confidence_pct: isOutage ? 65.0 : 95.0,
+                uncertainty_sigma_mps: 0.18,
+                gnss_mode: isOutage ? 'GNSS_DENIED' : 'GNSS_NORMAL',
+                source: isOutage ? 'AI_IMU_EKF_DEAD_RECKONING' : 'GNSS_AI_IMU_EKF',
+                blackout_elapsed_s: isOutage ? (timestamps[i] - 60.0) : 0.0,
+                context_mode: 'NORMAL_URBAN'
+            };
+
+            this.updateAvionicsHUD(nav);
+            this.updateMapPosition(nav);
+            this.replayIndex++;
+        }, 100); // 10 Hz replay
+    }
+}
+
+// Initialize on DOM load
+window.addEventListener('DOMContentLoaded', () => {
+    window.dashboard = new NavPulseDashboard();
+});

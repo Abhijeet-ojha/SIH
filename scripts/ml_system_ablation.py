@@ -1,220 +1,212 @@
 """
 scripts/ml_system_ablation.py
-Phase 15: Full System Navigation Ablation Table.
-Explicitly isolates the individual contributions of:
-  1. Raw IMU Dead Reckoning (Double-integration baseline)
-  2. AI-DR Pure (ML speed + gyro integration without EKF)
-  3. ML Speed + EKF Fusion (Constant measurement variance)
-  4. ML Speed + Calibrated Uncertainty + EKF
-  5. ML Speed + Calibrated Uncertainty + EKF + Non-Holonomic Constraints (NHC)
-  6. Full System (ML Speed + Calibrated Uncertainty + EKF + NHC + Dynamic ZUPT)
+System Ablation Study across 7 Incremental Architecture Stages (A -> G) for SIH 2026 PS-168:
+  Stage A — Raw IMU Dead Reckoning (double integration)
+  Stage B — ML Speed Dead Reckoning (ML speed + gyro integration)
+  Stage C — ML + 6-State EKF
+  Stage D — ML + Calibrated Uncertainty + 6-State EKF
+  Stage E — ML + EKF + Non-Holonomic Constraints (NHC)
+  Stage F — ML + EKF + NHC + Zero-Velocity Updates (ZUPT)
+  Stage G — Full Pipeline (ML + Calibrated Uncertainty + 6-State EKF + NHC + ZUPT + Context Layer)
 """
 
 import os
 import sys
-import time
-import json
 import numpy as np
 import pandas as pd
+from scipy.interpolate import interp1d
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.data_loader import get_real_iovnbd_benchmark_suite
-from src.feature_engineering import extract_causal_window_features
-from src.speed_model import SpeedRegressorModel, reconstruct_ai_dr_trajectory
+from core.features.extractor import CausalFeatureExtractor
+from core.models.tabular_models import TabularSpeedModel
+from core.fusion.ekf_6state import KinematicFusionEKF6State, MultiSensorContextEngine, wrap_angle
 from src.naive_dr import NaiveDeadReckoning
-from src.fusion_ekf import KinematicFusionEKF
 from src.metrics import calculate_benchmark_metrics
 
+
 def run_system_ablation():
-    print("=" * 95)
-    print("PHASE 15: FULL SYSTEM NAVIGATION ABLATION STUDY (90-SECOND GNSS OUTAGE)")
-    print("=" * 95)
+    print("=" * 105)
+    print("PHASE 3: COMPLETE 7-STAGE SYSTEM ABLATION BENCHMARK (A -> G)")
+    print("=" * 105)
 
     suite = get_real_iovnbd_benchmark_suite(max_samples_per_drive=3000)
     train_drives = suite["train_drives"]
     test_drives = suite["test_drives"]
 
-    print("\n[Step 1] Training speed regressor with calibrated uncertainty...")
+    extractor = CausalFeatureExtractor(window_sec=1.5, step_sec=0.2, sample_rate_hz=10.0, feature_group="all")
+    
+    # 1. Train Production Model
     X_train_list, y_train_list = [], []
     for d in train_drives:
         df = d.get_data()
-        X_df, y_spd, _, _ = extract_causal_window_features(df, window_sec=1.5, step_sec=0.2)
+        X_df, y_spd, _, _ = extractor.extract_features(df)
         X_train_list.append(X_df)
         y_train_list.append(y_spd)
 
     X_train = pd.concat(X_train_list, ignore_index=True)
     y_train = np.concatenate(y_train_list)
 
-    model = SpeedRegressorModel(model_type="xgboost", n_estimators=100, max_depth=6, uncertainty_method="conformal")
-    df_val = test_drives[0].get_data()
-    val_X, val_y, _, _ = extract_causal_window_features(df_val, window_sec=1.5, step_sec=0.2)
-    model.train(X_train, y_train, X_val=val_X, y_val=val_y)
+    calib_drive = train_drives[1] if len(train_drives) > 1 else train_drives[0]
+    calib_df = calib_drive.get_data()
+    X_calib, y_calib, _, _ = extractor.extract_features(calib_df)
 
-    configurations = [
-        ("1. Raw IMU Dead Reckoning (Naive Baseline)", "naive", False, False, False),
-        ("2. ML Speed Pure (No EKF)", "ai_pure", False, False, False),
-        ("3. ML Speed + EKF (Constant Sigma=0.5m/s)", "ekf_const", False, False, False),
-        ("4. ML Speed + Calibrated Uncertainty + EKF", "ekf_calib", True, False, False),
-        ("5. ML Speed + Uncertainty + EKF + NHC", "ekf_nhc", True, True, False),
-        ("6. Full System (ML + Uncertainty + EKF + NHC + ZUPT)", "full", True, True, True)
+    model = TabularSpeedModel(model_type="random_forest", n_estimators=100, max_depth=12, random_state=42, uncertainty_method="conformal")
+    model.train(X_train, y_train, X_calib=X_calib, y_calib=y_calib)
+
+    # Stages configuration
+    stages = [
+        ("Stage A: Raw IMU Dead Reckoning", "RAW_IMU"),
+        ("Stage B: ML Speed Only (Pure AI-DR)", "ML_SPEED_ONLY"),
+        ("Stage C: ML + 6-State EKF", "ML_EKF"),
+        ("Stage D: ML + Calibrated Uncertainty + EKF", "ML_UNCERTAINTY_EKF"),
+        ("Stage E: ML + EKF + NHC", "ML_EKF_NHC"),
+        ("Stage F: ML + EKF + NHC + ZUPT", "ML_EKF_NHC_ZUPT"),
+        ("Stage G: Full System Pipeline (+ Context Layer)", "FULL_SYSTEM")
     ]
 
     ablation_summary = []
-    print("\n" + "=" * 95)
-    print(f"{'System Configuration':<52} | {'90s Exit Error (m)':<20} | {'Peak Drift (m)':<16} | {'Settled (m)'}")
-    print("-" * 95)
 
-    for sys_label, sys_mode, use_unc, use_nhc, use_zupt in configurations:
-        exit_errors = []
-        peak_errors = []
-        settled_errors = []
+    print("\n" + "=" * 105)
+    print(f"{'System Architecture Stage':<48} | {'90s Blackout Exit Error':<24} | {'Peak Drift (m)':<15} | {'Traj RMSE'}")
+    print("-" * 105)
+
+    for stage_name, stage_key in stages:
+        stage_exit_errs, stage_peak_errs, stage_traj_rmses = [], [], []
 
         for d in test_drives:
             df = d.get_data()
-            d_id = d.driver_id
-            b_start = 60.0
-            b_end = min(d.duration_sec - 10.0, 150.0)
+            t = df["timestamp"].values
+            n = len(df)
+            dt_arr = np.diff(t, prepend=t[0])
+            dt_arr[0] = dt_arr[1] if n > 1 else 0.10
 
             init_heading = df["heading"].iloc[0] if "heading" in df.columns else 0.0
             init_speed = df["speed"].iloc[0] if "speed" in df.columns else 0.0
             init_pos = (df["pos_x"].iloc[0], df["pos_y"].iloc[0]) if "pos_x" in df.columns else (0.0, 0.0)
 
-            X_te, y_te, t_te, _ = extract_causal_window_features(df, window_sec=1.5, step_sec=0.2)
-            preds, stds = model.predict_with_uncertainty(X_te)
+            X_test, y_test, t_test, _ = extractor.extract_features(df)
+            preds, sigmas = model.predict_with_uncertainty(X_test)
 
-            t_arr = df["timestamp"].values
-            b_mask = np.where((t_arr >= b_start) & (t_arr < b_end))[0]
+            interp_func = interp1d(t_test, preds, kind="linear", bounds_error=False, fill_value=(preds[0], preds[-1]))
+            v_dense = np.maximum(0.0, interp_func(t))
+            interp_std = interp1d(t_test, sigmas, kind="linear", bounds_error=False, fill_value=(sigmas[0], sigmas[-1]))
+            std_dense = np.maximum(0.05, interp_std(t))
 
-            if sys_mode == "naive":
+            # Stage A: Raw IMU
+            if stage_key == "RAW_IMU":
                 naive_res = NaiveDeadReckoning(init_heading, init_speed, init_pos).compute(df)
-                err_arr = naive_res["pos_error_m"].values
-                exit_errors.append(float(err_arr[b_mask[-1]]) if len(b_mask) > 0 else float(err_arr[-1]))
-                peak_errors.append(float(np.max(err_arr[b_mask])) if len(b_mask) > 0 else float(np.max(err_arr)))
-                settled_errors.append(float(err_arr[-1]))
+                err = naive_res["pos_error_m"].values
+                stage_exit_errs.append(float(err[-1]))
+                stage_peak_errs.append(float(np.max(err)))
+                stage_traj_rmses.append(float(np.sqrt(np.mean(err**2))))
+                continue
 
-            elif sys_mode == "ai_pure":
-                ai_res = reconstruct_ai_dr_trajectory(df, t_te, preds, v_std=stds, initial_heading=init_heading, initial_pos=init_pos)
-                err_arr = ai_res["ai_pos_error_m"].values
-                exit_errors.append(float(err_arr[b_mask[-1]]) if len(b_mask) > 0 else float(err_arr[-1]))
-                peak_errors.append(float(np.max(err_arr[b_mask])) if len(b_mask) > 0 else float(np.max(err_arr)))
-                settled_errors.append(float(err_arr[-1]))
-
-            else:
-                # Custom EKF run with ablation switches
-                ai_res = reconstruct_ai_dr_trajectory(df, t_te, preds, v_std=stds if use_unc else None, initial_heading=init_heading, initial_pos=init_pos)
-                
-                # Run custom EKF
-                n = len(df)
-                t_arr = df["timestamp"].values
-                dt_arr = np.diff(t_arr, prepend=t_arr[0])
-                dt_arr[0] = 0.1
-
-                ekf = KinematicFusionEKF(
-                    init_x=init_pos[0],
-                    init_y=init_pos[1],
-                    init_v=init_speed,
-                    init_heading=init_heading,
-                    driver_style="aggressive" if d_id == "E" else "normal"
-                )
-
-                fused_pos_x = np.zeros(n)
-                fused_pos_y = np.zeros(n)
-                fused_speed = np.zeros(n)
-                open_loop_x = np.zeros(n)
-                open_loop_y = np.zeros(n)
-
-                has_lat_lon = "pos_x" in df.columns and "pos_y" in df.columns
-                gt_px = df["pos_x"].values if has_lat_lon else np.zeros(n)
-                gt_py = df["pos_y"].values if has_lat_lon else np.zeros(n)
-
-                v_ai = ai_res["ai_speed"].values
-                v_ai_std = ai_res["ai_speed_std"].values if use_unc else np.ones(n) * 0.5
-                acc_x = df["acc_x"].values
-                acc_y = df["acc_y"].values
-                acc_z = df["acc_z"].values
+            # Stage B: ML Speed Only
+            if stage_key == "ML_SPEED_ONLY":
+                h_ai = np.zeros(n)
+                px_ai = np.zeros(n)
+                py_ai = np.zeros(n)
+                h_ai[0] = init_heading
+                px_ai[0] = init_pos[0]
+                py_ai[0] = init_pos[1]
                 gyro_z = df["gyro_z"].values
-
-                for i in range(n):
+                for i in range(1, n):
                     dt = dt_arr[i]
-                    cur_t = t_arr[i]
-                    is_blackout = (cur_t >= b_start) and (cur_t < b_end)
+                    h_ai[i] = h_ai[i-1] + gyro_z[i] * dt
+                    v_m = 0.5 * (v_dense[i-1] + v_dense[i])
+                    h_m = 0.5 * (h_ai[i-1] + h_ai[i])
+                    px_ai[i] = px_ai[i-1] + v_m * np.sin(h_m) * dt
+                    py_ai[i] = py_ai[i-1] + v_m * np.cos(h_m) * dt
+                dx = px_ai - df["pos_x"].values
+                dy = py_ai - df["pos_y"].values
+                err = np.sqrt(dx**2 + dy**2)
+                stage_exit_errs.append(float(err[int(min(len(err)-1, 1500))]))
+                stage_peak_errs.append(float(np.max(err)))
+                stage_traj_rmses.append(float(np.sqrt(np.mean(err**2))))
+                continue
 
-                    is_stopped = False
-                    if use_zupt:
-                        a_mag = np.sqrt(acc_x[i]**2 + acc_y[i]**2 + acc_z[i]**2)
-                        g_mag = abs(gyro_z[i])
-                        if abs(a_mag - 9.81) < 0.25 and g_mag < 0.05 and v_ai[i] < 0.4:
-                            is_stopped = True
+            # Stages C through G: EKF Variants
+            use_uncertainty = (stage_key in ["ML_UNCERTAINTY_EKF", "FULL_SYSTEM"])
+            use_nhc = (stage_key in ["ML_EKF_NHC", "ML_EKF_NHC_ZUPT", "FULL_SYSTEM"])
+            use_zupt = (stage_key in ["ML_EKF_NHC_ZUPT", "FULL_SYSTEM"])
+            use_context = (stage_key == "FULL_SYSTEM")
 
-                    sigma = v_ai_std[i] if use_unc else 0.5
-                    ekf.predict(
-                        dt=dt,
-                        v_ai=v_ai[i],
-                        v_ai_std=sigma,
-                        gyro_z=gyro_z[i],
-                        is_stationary=is_stopped
-                    )
+            ekf = KinematicFusionEKF6State(
+                init_x=init_pos[0], init_y=init_pos[1], init_v=init_speed, init_heading=init_heading,
+                driver_style="aggressive" if d.driver_id == "E" else "normal"
+            )
+            context_engine = MultiSensorContextEngine()
+            
+            fused_px, fused_py = np.zeros(n), np.zeros(n)
+            acc_x, acc_y = df["acc_x"].values, df["acc_y"].values
+            gyro_z = df["gyro_z"].values
+            gps_x, gps_y, gps_v = df["pos_x"].values, df["pos_y"].values, df["speed"].values
+            ambient_lux = df["ambient_lux"].values if "ambient_lux" in df.columns else np.ones(n) * 1500.0
 
-                    # NHC constraint
-                    if use_nhc:
-                        ekf.update_nhc()
+            win = 5
+            for i in range(n):
+                dt = dt_arr[i]
+                curr_t = t[i]
+                s_idx = max(0, i - win)
+                e_idx = min(n, i + win)
+                acc_var = float(np.var(acc_x[s_idx:e_idx]) + np.var(acc_y[s_idx:e_idx]))
+                gyro_abs = float(np.abs(gyro_z[i]))
 
-                    # ZUPT constraint
-                    if is_stopped and use_zupt:
-                        ekf.update_zupt()
+                mode = context_engine.update_context(ambient_lux[i], min(float(v_dense[i]), float(gps_v[i])), acc_var, gyro_abs) if use_context else "NORMAL_URBAN"
+                is_stopped = (acc_var < 0.018 and gyro_abs < 0.01 and v_dense[i] < 0.5) if use_zupt else False
 
-                    # Open-loop position before GPS correction
-                    open_loop_x[i] = ekf.x[0]
-                    open_loop_y[i] = ekf.x[1]
+                v_sigma_feed = std_dense[i] if use_uncertainty else 0.20
+                ekf.predict(dt=dt, v_ai=v_dense[i], v_ai_std=v_sigma_feed, gyro_z=gyro_z[i], is_stationary=is_stopped, is_tunnel_alert=(mode == "PREDICTIVE_TUNNEL_BLACKOUT"))
 
-                    if not is_blackout and has_lat_lon:
-                        h_meas = df["heading"].values[i] if "heading" in df.columns else None
-                        ekf.update_gps(gps_x=gt_px[i], gps_y=gt_py[i], gps_speed=df["speed"].values[i], gps_heading=h_meas)
+                if use_nhc:
+                    ekf.update_nhc()
+                if is_stopped and use_zupt:
+                    ekf.update_zupt()
 
-                    fused_pos_x[i] = ekf.x[0]
-                    fused_pos_y[i] = ekf.x[1]
+                in_outage = (60.0 <= curr_t < min(d.duration_sec - 10.0, 150.0))
+                if not in_outage:
+                    ekf.update_gps(gps_x=gps_x[i], gps_y=gps_y[i], gps_speed=gps_v[i], gps_heading=None)
 
-                # Metrics
-                err = np.sqrt((fused_pos_x - gt_px)**2 + (fused_pos_y - gt_py)**2)
-                ol_err = np.sqrt((open_loop_x - gt_px)**2 + (open_loop_y - gt_py)**2)
+                fused_px[i] = ekf.x[0]
+                fused_py[i] = ekf.x[1]
 
-                b_mask = np.where((t_arr >= b_start) & (t_arr < b_end))[0]
-                if len(b_mask) > 0:
-                    exit_errors.append(float(ol_err[b_mask[-1]]))
-                    peak_errors.append(float(np.max(ol_err[b_mask])))
-                else:
-                    exit_errors.append(float(err[-1]))
-                    peak_errors.append(float(np.max(err)))
+            # Calculate error during outage
+            outage_mask = (t >= 60.0) & (t < min(d.duration_sec - 10.0, 150.0))
+            dx = fused_px - gps_x
+            dy = fused_py - gps_y
+            pos_err = np.sqrt(dx**2 + dy**2)
 
-                settle_mask = np.where(t_arr >= (b_end + 8.0))[0]
-                settled_errors.append(float(err[settle_mask[0]]) if len(settle_mask) > 0 else float(err[-1]))
+            outage_err = pos_err[outage_mask] if np.any(outage_mask) else pos_err
+            stage_exit_errs.append(float(outage_err[-1]))
+            stage_peak_errs.append(float(np.max(outage_err)))
+            stage_traj_rmses.append(float(np.sqrt(np.mean(pos_err**2))))
 
-        m_exit = float(np.mean(exit_errors))
-        s_exit = float(np.std(exit_errors))
-        m_peak = float(np.mean(peak_errors))
-        s_peak = float(np.std(peak_errors))
-        m_settle = float(np.mean(settled_errors))
+        mean_exit = float(np.mean(stage_exit_errs))
+        mean_peak = float(np.mean(stage_peak_errs))
+        mean_rmse = float(np.mean(stage_traj_rmses))
+
+        print(f"{stage_name:<48} | {mean_exit:<24.2f} | {mean_peak:<15.2f} | {mean_rmse:.2f} m")
 
         ablation_summary.append({
-            "configuration": sys_label,
-            "blackout_exit_error_m": m_exit,
-            "blackout_exit_std_m": s_exit,
-            "peak_drift_m": m_peak,
-            "peak_drift_std_m": s_peak,
-            "post_reacquisition_settled_m": m_settle
+            "stage_name": stage_name,
+            "stage_key": stage_key,
+            "blackout_90s_exit_error_m": mean_exit,
+            "blackout_90s_peak_drift_m": mean_peak,
+            "trajectory_rmse_m": mean_rmse
         })
-        print(f"{sys_label:<52} | {f'{m_exit:.2f} +/- {s_exit:.1f} m':<20} | {f'{m_peak:.2f} +/- {s_peak:.1f} m':<16} | {f'{m_settle:.2f} m'}")
 
-    print("=" * 95)
     out_dir = os.path.join(PROJECT_ROOT, "outputs", "metrics", "ml_experiments")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "phase15_system_ablation.csv")
+    out_path = os.path.join(out_dir, "system_ablation_scorecard.csv")
     pd.DataFrame(ablation_summary).to_csv(out_path, index=False)
-    print(f"[PASS] Saved full system ablation: {out_path}")
+    print(f"\n[PASS] Saved System Ablation Scorecard to: {out_path}")
+    print("=" * 105)
     return pd.DataFrame(ablation_summary)
+
 
 if __name__ == "__main__":
     run_system_ablation()

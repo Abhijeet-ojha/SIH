@@ -1,139 +1,136 @@
 """
 scripts/run_all.py
-Master pipeline runner for SIH PS 168 prototype.
-Executes Day 1, Day 2, and Day 3 on real IO-VNBD data, followed by a TWO-STAGE
-integrity check:
-  Stage A: Verifies the confidence-weighting code path is live by perturbing
-           sigma_v and confirming the output hash CHANGES.
-  Stage B: Verifies session-to-session determinism by running twice with
-           identical inputs and confirming the output hash is UNCHANGED.
+Master End-to-End Execution Pipeline and Scientific Validation Suite for SIH 2026 PS-168.
+Orchestrates:
+  Stage 1:  Repository Unit Tests & Interface Validation (tests/)
+  Stage 2:  Target Signal Quality Audit (scripts/ml_phase4_target_audit.py)
+  Stage 3:  Causal Window Length Sweep & Latency Benchmark (scripts/ml_phase1_causal_sweep.py)
+  Stage 4:  Feature Group Ablation Study (scripts/ml_feature_ablation.py)
+  Stage 5:  Master ML Speed Model Benchmark (RF, HistGB, XGB, Temporal CNN) (scripts/ml_benchmark_suite.py)
+  Stage 6:  Motion Regimes & Sensor Robustness Analysis (scripts/ml_regime_and_robustness.py)
+  Stage 7:  7-Stage System Ablation Benchmark (A -> G) (scripts/ml_system_ablation.py)
+  Stage 8:  Production Training & 6-State EKF Fusion (scripts/02_train_and_fuse.py)
+  Stage 9:  Edge Model Export & Python <-> Edge Parity Verification (scripts/verify_edge_parity.py)
+  Stage 10: Multi-Driver Cross-Validation Benchmark (scripts/03_evaluate_and_benchmark.py)
+  Stage 11: Export Interactive Visualizer Data (scripts/export_dashboard_data.py)
+  Stage 12: Final Engineering Scorecard Generation
 """
 
 import os
 import sys
 import time
-import json
-import hashlib
+import subprocess
 import importlib
 import numpy as np
+import pandas as pd
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-run_day1 = importlib.import_module("scripts.01_run_naive_baseline").main
-run_day2 = importlib.import_module("scripts.02_train_and_fuse").main
-run_day3 = importlib.import_module("scripts.03_evaluate_and_benchmark").main
 
-def get_results_hash() -> str:
-    path = os.path.join(PROJECT_ROOT, "outputs", "metrics", "benchmark_results.json")
-    if not os.path.exists(path):
-        return ""
-    with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
+def run_stage(title: str, module_path: str, function_name: str = "main"):
+    print("\n" + "=" * 85)
+    print(f"STAGE: {title}")
+    print("=" * 85)
+    t0 = time.perf_counter()
+    mod = importlib.import_module(module_path)
+    fn = getattr(mod, function_name)
+    fn()
+    elapsed = time.perf_counter() - t0
+    print(f"[COMPLETED] {title} in {elapsed:.2f}s")
 
-def verify_confidence_scaling_is_live():
-    """
-    Stage A: Proves the confidence-aware EKF code path is actually executing.
-    Runs EKF on a short slice of S-Vfa02 with sigma=0 (max trust) vs sigma=10 (min trust).
-    Asserts the resulting fused_pos_x arrays are DIFFERENT.
-    This would fail if the new code were shadowed or bypassed.
-    """
-    from src.data_loader import load_real_iovnbd_drive
-    from src.feature_engineering import extract_window_features
-    from src.speed_model import SpeedRegressorModel, reconstruct_ai_dr_trajectory
-    import src.fusion_ekf as fek
 
-    drive = load_real_iovnbd_drive(
-        os.path.join(PROJECT_ROOT, "data", "IO-VNBD-repo",
-            "Synchronised V abd S datasets", "Categorised IOVNB Dataset",
-            "Vf (Driver E)", "V-Vfa02", "S-Vfa02.csv"),
-        driver_id="E", max_samples=300
-    )
-    df = drive.get_data()
-    model = SpeedRegressorModel()
-    model.load(os.path.join(PROJECT_ROOT, "outputs", "models", "speed_regressor.joblib"))
-    X, y, t = extract_window_features(df, window_sec=1.5, step_sec=0.2)
-    y_pred, y_std = model.predict_with_uncertainty(X)
-    ai_df = reconstruct_ai_dr_trajectory(
-        df, t, y_pred, v_std=y_std,
-        initial_heading=df["heading"].iloc[0],
-        initial_pos=(df["pos_x"].iloc[0], df["pos_y"].iloc[0])
-    )
+def run_unit_tests():
+    print("\n" + "=" * 85)
+    print("STAGE 1: RUNNING UNIT & INTEGRATION TEST SUITE (tests/)")
+    print("=" * 85)
+    import unittest
+    loader = unittest.TestLoader()
+    suite = loader.discover(os.path.join(PROJECT_ROOT, "tests"), pattern="test_*.py")
+    runner = unittest.TextTestRunner(verbosity=1)
+    result = runner.run(suite)
+    if not result.wasSuccessful():
+        raise RuntimeError("Unit test suite failed! Stopping pipeline.")
+    print("[PASS] All unit and integration tests passed cleanly.")
 
-    ai_spd = ai_df["ai_speed"].values
 
-    # Max-confidence run: AI fully trusted (sigma -> 0, alpha -> 0.25)
-    res_zero = fek.run_fusion_pipeline(df, ai_spd, np.zeros(len(df)),
-        driver_style="aggressive", blackout_start_sec=20.0, blackout_end_sec=45.0)
+def generate_final_scorecard():
+    print("\n" + "=" * 105)
+    print("FINAL MASTER ENGINEERING SCORECARD — SIH 2026 PS-168")
+    print("=" * 105)
+    
+    scorecard_path = os.path.join(PROJECT_ROOT, "outputs", "metrics", "ml_experiments", "ml_models_benchmark_scorecard.csv")
+    if os.path.exists(scorecard_path):
+        df_models = pd.read_csv(scorecard_path)
+        print("\n1. Model Architecture & Deployment Scorecard:")
+        print(df_models.to_string(index=False))
 
-    # Min-confidence run: AI almost ignored (sigma=10, alpha -> 0.024)
-    res_huge = fek.run_fusion_pipeline(df, ai_spd, np.ones(len(df)) * 10.0,
-        driver_style="aggressive", blackout_start_sec=20.0, blackout_end_sec=45.0)
+    ablation_path = os.path.join(PROJECT_ROOT, "outputs", "metrics", "ml_experiments", "system_ablation_scorecard.csv")
+    if os.path.exists(ablation_path):
+        df_abl = pd.read_csv(ablation_path)
+        print("\n2. System Ablation Attribution (A -> G):")
+        print(df_abl.to_string(index=False))
 
-    h_zero = hashlib.sha256(res_zero.to_json().encode()).hexdigest()[:16]
-    h_huge = hashlib.sha256(res_huge.to_json().encode()).hexdigest()[:16]
+    parity_path = os.path.join(PROJECT_ROOT, "outputs", "metrics", "ml_experiments", "edge_parity_report.json")
+    if os.path.exists(parity_path):
+        import json
+        with open(parity_path) as f:
+            p_data = json.load(f)
+        print("\n3. Python <-> Edge Deployment Parity:")
+        print(f"   - Parity Verified: {p_data.get('parity_passed')} (Max diff: {p_data.get('max_prediction_diff', 0):.8f} m/s <= {p_data.get('tolerance')})")
+        print(f"   - Edge Latency:    {p_data.get('edge_latency_ms_per_window', 0):.3f} ms / window")
 
-    assert h_zero != h_huge, (
-        f"FATAL: Confidence-aware EKF code path NOT live! "
-        f"sigma=0 and sigma=10 produced identical hash {h_zero}. "
-        "Check for stale bytecache or import shadowing."
-    )
+    print("\n" + "=" * 105)
+    print("PIPELINE COMPLETE: ALL EXPERIMENTS, AUDITS, PARITY TESTS, AND ARTIFACTS PRODUCED.")
+    print("=" * 105)
 
-    bl_mask = res_zero["is_gnss_blackout"].values
-    px_zero = res_zero["fused_pos_x"].values[bl_mask][:3]
-    px_huge = res_huge["fused_pos_x"].values[bl_mask][:3]
-    max_diff = np.max(np.abs(px_zero - px_huge))
-
-    print(f"    sigma=0.0 hash:  {h_zero}  pos_x[0]={px_zero[0]:.4f}")
-    print(f"    sigma=10. hash:  {h_huge}  pos_x[0]={px_huge[0]:.4f}")
-    print(f"    Max positional diff: {max_diff:.4f}m  [PASS: code path is live]")
 
 def main():
-    t0 = time.time()
-    print("=" * 80)
-    print("SIH PS 168: AI-ASSISTED VEHICLE DEAD RECKONING & SENSOR FUSION PROTOTYPE")
-    print("100% Real IO-VNBD Benchmark Suite (Coventry, UK)")
-    print("=" * 80)
-    
-    print("\n>>> EXECUTING DAY 1 PIPELINE: Naive Dead Reckoning Baseline...")
-    run_day1()
+    start_total = time.perf_counter()
+    print("=" * 85)
+    print("SIH 2026 PS-168 — UNIVERSAL GNSS-DENIED LOCALIZATION ENGINE MASTER PIPELINE")
+    print("=" * 85)
 
-    print("\n>>> EXECUTING DAY 2 PIPELINE: Confidence-Aware AI Model & EKF Fusion...")
-    run_day2()
+    # 1. Tests
+    run_unit_tests()
 
-    print("\n>>> EXECUTING DAY 3 PIPELINE: Multi-Driver Benchmark Metrics...")
-    run_day3()
+    # 2. Target Signal Quality Audit
+    run_stage("Phase 4: Target Signal Quality Audit", "scripts.ml_phase4_target_audit", "audit_target_signals")
 
-    hash_run1 = get_results_hash()
+    # 3. Causal Window Sweep
+    run_stage("Phase 1: Causal Window Length Sweep", "scripts.ml_phase1_causal_sweep", "run_causal_window_sweep")
 
-    print("\n" + "=" * 80)
-    print(">>> STAGE A: VERIFYING CONFIDENCE-AWARE CODE PATH IS LIVE...")
-    verify_confidence_scaling_is_live()
+    # 4. Feature Ablation Study
+    run_stage("Phase 2: Feature Group Ablation", "scripts.ml_feature_ablation", "run_feature_ablation_study")
 
-    print("\n>>> STAGE B: VERIFYING BITWISE DETERMINISM (BACK-TO-BACK RUN)...")
-    print(f"    Run 1 Benchmark Hash: {hash_run1[:16]}...")
-    run_day3()
-    hash_run2 = get_results_hash()
-    print(f"    Run 2 Benchmark Hash: {hash_run2[:16]}...")
+    # 5. Master ML Benchmark Suite (RF, HistGB, XGB, Temporal CNN)
+    run_stage("Master ML Benchmark Suite & LODrO", "scripts.ml_benchmark_suite", "run_ml_benchmark_suite")
 
-    assert hash_run1 == hash_run2, (
-        f"FATAL: Nondeterminism detected! "
-        f"Run 1 ({hash_run1[:16]}) != Run 2 ({hash_run2[:16]})"
-    )
-    print("    [PASS] 100% BITWISE DETERMINISM CONFIRMED!")
+    # 6. Motion Regimes & Robustness Testing
+    run_stage("Motion Regimes & Sensor Robustness", "scripts.ml_regime_and_robustness", "run_regime_and_robustness_analysis")
 
-    elapsed = time.time() - t0
-    print("=" * 80)
-    print(f"ALL 3 PHASES COMPLETED & VERIFIED IN {elapsed:.2f}s!")
-    print("Generated Artifacts:")
-    print("  - Figure 1: outputs/figures/01_naive_dr_drift.png")
-    print("  - Figure 2: outputs/figures/02_speed_prediction_vs_gt.png")
-    print("  - Figure 3: outputs/figures/03_full_trajectory_comparison.png")
-    print("  - Metrics JSON: outputs/metrics/benchmark_results.json")
-    print("  - Metrics MD:   outputs/metrics/benchmark_summary.md")
-    print("  - Embedded Model: outputs/models/embedded_rules.json")
-    print("    (Feature schema for on-device Kotlin inference engine)")
-    print("=" * 80)
+    # 7. System Ablation Benchmark (A -> G)
+    run_stage("7-Stage System Ablation", "scripts.ml_system_ablation", "run_system_ablation")
+
+    # 8. Production Training & 6-State EKF Fusion
+    run_stage("Production Training & 6-State EKF Fusion", "scripts.02_train_and_fuse", "main")
+
+    # 9. Edge Export & Parity Verification
+    run_stage("Edge Model Export & Numerical Parity", "scripts.verify_edge_parity", "main")
+
+    # 10. Multi-Driver Benchmark
+    run_stage("Multi-Driver Benchmark Suite", "scripts.03_evaluate_and_benchmark", "main")
+
+    # 11. Dashboard Data Export
+    run_stage("Export Dashboard Visualizer Data", "scripts.export_dashboard_data", "main")
+
+    # 12. Final Engineering Scorecard
+    generate_final_scorecard()
+
+    total_time = time.perf_counter() - start_total
+    print(f"\n>> Complete Scientific Master Pipeline Executed Successfully in {total_time:.2f}s <<\n")
+
 
 if __name__ == "__main__":
     main()

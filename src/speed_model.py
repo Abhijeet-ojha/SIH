@@ -1,12 +1,7 @@
 """
 src/speed_model.py
-Machine Learning Speed Regression & Calibrated Uncertainty Estimation Suite:
-Supports:
-  - Random Forest (Tree Ensemble Uncertainty)
-  - HistGradientBoosting (Fast Mobile Histogram Trees & Quantile Loss)
-  - XGBoost Regressor (Gradient Boosted Trees)
-  - 1D-CNN / Temporal Convolutional Network (PyTorch Lightweight Neural Architecture)
-  - Split Conformal Prediction for distribution-free calibrated prediction intervals
+Compatibility Bridge delegating to core/models/ and core/uncertainty/.
+Unified Speed Regression & Calibrated Uncertainty Estimation Suite.
 """
 
 import os
@@ -19,49 +14,20 @@ import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from scipy.interpolate import interp1d
 
-from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import xgboost as xgb
-import torch
-import torch.nn as nn
-import torch.optim as optim
+from core.models.tabular_models import TabularSpeedModel
+from core.models.temporal_models import CausalTemporalSpeedNet, TemporalSequenceSpeedModel
+from core.uncertainty.calibrator import ConformalUncertaintyCalibrator
+from core.export.exporter import EdgeModelExporter
+from core.export.spec import FeatureConfigSpec
 
-# ── 1. Lightweight 1D-CNN Architecture (PyTorch) ─────────────────────────────
-class Conv1DSpeedNet(nn.Module):
-    """
-    Lightweight 1D Temporal Convolutional Neural Network for on-device speed estimation.
-    Designed for low memory and sub-millisecond CPU inference.
-    """
-    def __init__(self, in_features: int, hidden_dim: int = 32):
-        super().__init__()
-        self.fc_in = nn.Linear(in_features, hidden_dim)
-        self.conv1 = nn.Conv1d(1, 16, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm1d(16)
-        self.relu = nn.ReLU()
-        self.conv2 = nn.Conv1d(16, 32, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm1d(32)
-        self.pool = nn.AdaptiveAvgPool1d(8)
-        self.head = nn.Sequential(
-            nn.Linear(32 * 8, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1)
-        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (batch_size, num_features)
-        h = self.relu(self.fc_in(x))
-        h = h.unsqueeze(1) # (batch, 1, hidden_dim)
-        h = self.relu(self.bn1(self.conv1(h)))
-        h = self.relu(self.bn2(self.conv2(h)))
-        h = self.pool(h)
-        h = h.view(h.size(0), -1)
-        out = self.head(h)
-        return torch.relu(out) # Speed >= 0
+# Conv1DSpeedNet alias for backward compatibility
+Conv1DSpeedNet = CausalTemporalSpeedNet
 
-# ── 2. Unified Speed Model Interface ─────────────────────────────────────────
+
 class SpeedRegressorModel:
     """
-    Unified multi-model speed estimator with calibrated uncertainty quantification.
+    Unified multi-model speed estimator wrapper delegating to core/models/TabularSpeedModel.
     """
     def __init__(
         self,
@@ -69,38 +35,35 @@ class SpeedRegressorModel:
         n_estimators: int = 100,
         max_depth: int = 12,
         random_state: int = 42,
-        uncertainty_method: str = "ensemble"  # 'ensemble', 'conformal', 'quantile'
+        uncertainty_method: str = "ensemble"
     ):
         self.model_type = model_type.lower()
         self.uncertainty_method = uncertainty_method.lower()
         self.random_state = random_state
         self.n_estimators = n_estimators
         self.max_depth = max_depth
+        
+        self.inner_model = TabularSpeedModel(
+            model_type=self.model_type,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            random_state=random_state,
+            uncertainty_method=self.uncertainty_method
+        )
         self.is_trained = False
         self.feature_names = []
-        self.conformal_q_hat = 0.50 # Conformal non-conformity threshold
-        
-        if self.model_type in ["random_forest", "rf"]:
-            self.model = RandomForestRegressor(
-                n_estimators=n_estimators, max_depth=max_depth,
-                n_jobs=-1, random_state=random_state
-            )
-        elif self.model_type in ["hist_gb", "histgb"]:
-            self.model = HistGradientBoostingRegressor(
-                max_iter=150, max_depth=max_depth, random_state=random_state
-            )
-            # Auxiliary models for Quantile regression
-            self.q_lower_model = HistGradientBoostingRegressor(loss="quantile", quantile=0.05, max_iter=100, max_depth=max_depth, random_state=random_state)
-            self.q_upper_model = HistGradientBoostingRegressor(loss="quantile", quantile=0.95, max_iter=100, max_depth=max_depth, random_state=random_state)
-        elif self.model_type in ["xgboost", "xgb"]:
-            self.model = xgb.XGBRegressor(
-                n_estimators=n_estimators, max_depth=min(max_depth, 8),
-                learning_rate=0.08, random_state=random_state, n_jobs=-1
-            )
-        elif self.model_type in ["1d_cnn", "cnn", "tcn"]:
-            self.model = None # Initialized upon knowing feature dimension
-        else:
-            raise ValueError(f"Unknown model_type: {model_type}")
+
+    @property
+    def conformal_q_hat(self) -> float:
+        return self.inner_model.conformal_calibrator.q_hat
+
+    @conformal_q_hat.setter
+    def conformal_q_hat(self, val: float):
+        self.inner_model.conformal_calibrator.q_hat = float(val)
+
+    @property
+    def model(self):
+        return self.inner_model.model
 
     def train(
         self,
@@ -109,139 +72,35 @@ class SpeedRegressorModel:
         X_val: Optional[pd.DataFrame] = None,
         y_val: Optional[np.ndarray] = None
     ) -> Dict[str, float]:
-        self.feature_names = list(X.columns)
-        n_feats = X.shape[1]
-
-        if self.model_type in ["1d_cnn", "cnn", "tcn"]:
-            self.model = Conv1DSpeedNet(in_features=n_feats)
-            self._train_torch(X.values, y, epochs=40, batch_size=64)
-        elif self.model_type in ["hist_gb", "histgb"]:
-            self.model.fit(X.values, y)
-            if self.uncertainty_method == "quantile":
-                self.q_lower_model.fit(X.values, y)
-                self.q_upper_model.fit(X.values, y)
-        else:
-            self.model.fit(X.values, y)
-
-        self.is_trained = True
-
-        # Calibrate Conformal Prediction on validation data if provided
-        if X_val is not None and y_val is not None and len(X_val) > 0:
-            val_preds = self.predict(X_val)
-            residuals = np.abs(y_val - val_preds)
-            alpha = 0.10 # 90% confidence level
-            n_val = len(residuals)
-            k = int(np.ceil((n_val + 1) * (1.0 - alpha)))
-            k = min(n_val - 1, max(0, k))
-            self.conformal_q_hat = float(np.sort(residuals)[k])
-
-        train_preds = self.predict(X)
-        return {
-            "train_rmse": float(np.sqrt(mean_squared_error(y, train_preds))),
-            "train_mae": float(mean_absolute_error(y, train_preds)),
-            "train_r2": float(r2_score(y, train_preds))
-        }
-
-    def _train_torch(self, X_arr: np.ndarray, y_arr: np.ndarray, epochs: int = 40, batch_size: int = 64):
-        X_t = torch.tensor(X_arr, dtype=torch.float32)
-        y_t = torch.tensor(y_arr, dtype=torch.float32).unsqueeze(1)
-        dataset = torch.utils.data.TensorDataset(X_t, y_t)
-        loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        criterion = nn.HuberLoss(delta=1.0)
-        optimizer = optim.Adam(self.model.parameters(), lr=0.003, weight_decay=1e-4)
-
-        self.model.train()
-        for epoch in range(epochs):
-            for bx, by in loader:
-                optimizer.zero_grad()
-                out = self.model(bx)
-                loss = criterion(out, by)
-                loss.backward()
-                optimizer.step()
+        metrics = self.inner_model.train(X, y, X_calib=X_val, y_calib=y_val)
+        self.is_trained = self.inner_model.is_trained
+        self.feature_names = self.inner_model.feature_names
+        return metrics
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        if not self.is_trained:
-            raise ValueError("Model must be trained before predicting.")
-        
-        if self.model_type in ["1d_cnn", "cnn", "tcn"]:
-            self.model.eval()
-            with torch.no_grad():
-                X_t = torch.tensor(X.values, dtype=torch.float32)
-                preds = self.model(X_t).squeeze().numpy()
-                return np.maximum(0.0, preds)
-        else:
-            return np.maximum(0.0, self.model.predict(X.values))
+        return self.inner_model.predict(X)
 
     def predict_with_uncertainty(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Computes velocity prediction and uncertainty sigma_v.
-        Methods:
-          - 'ensemble': Tree ensemble standard deviation across decision trees
-          - 'quantile': Transformed interval sigma = (q95 - q05) / (2 * 1.645)
-          - 'conformal': Calibrated residual sigma = conformal_q_hat / 1.645
-        """
-        if not self.is_trained:
-            raise ValueError("Model must be trained before predicting.")
-
-        y_mean = self.predict(X)
-
-        if self.uncertainty_method == "conformal":
-            # Conformal prediction uncertainty
-            sigma_v = np.ones(len(y_mean)) * max(0.10, self.conformal_q_hat / 1.645)
-            return y_mean, sigma_v
-
-        elif self.uncertainty_method == "quantile" and self.model_type in ["hist_gb", "histgb"]:
-            q_low = np.maximum(0.0, self.q_lower_model.predict(X.values))
-            q_high = np.maximum(0.0, self.q_upper_model.predict(X.values))
-            interval_width = np.maximum(0.10, q_high - q_low)
-            sigma_v = interval_width / (2.0 * 1.645)
-            return y_mean, sigma_v
-
-        elif hasattr(self.model, "estimators_"): # Random Forest
-            tree_preds = np.array([tree.predict(X.values) for tree in self.model.estimators_])
-            y_std = np.std(tree_preds, axis=0)
-            return y_mean, np.maximum(0.05, y_std)
-
-        else: # Default residual fallback
-            return y_mean, np.ones(len(y_mean)) * max(0.20, self.conformal_q_hat / 1.645)
+        return self.inner_model.predict_with_uncertainty(X)
 
     def evaluate(self, X: pd.DataFrame, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
-        y_pred, y_std = self.predict_with_uncertainty(X)
-        metrics = {
-            "test_rmse": float(np.sqrt(mean_squared_error(y, y_pred))),
-            "test_mae": float(mean_absolute_error(y, y_pred)),
-            "test_r2": float(r2_score(y, y_pred)),
-            "mean_uncertainty_sigma": float(np.mean(y_std))
-        }
-        return y_pred, y_std, metrics
+        return self.inner_model.evaluate(X, y)
 
     def get_model_size_kb(self) -> float:
-        """Computes serialized model size in Kilobytes."""
-        buf = io.BytesIO()
-        joblib.dump(self.model, buf)
-        return float(len(buf.getvalue()) / 1024.0)
+        return self.inner_model.get_model_size_kb()
 
     def save(self, filepath: str):
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        joblib.dump({
-            "model": self.model,
-            "features": self.feature_names,
-            "type": self.model_type,
-            "uncertainty_method": self.uncertainty_method,
-            "conformal_q_hat": self.conformal_q_hat
-        }, filepath)
+        self.inner_model.save(filepath)
 
     def load(self, filepath: str):
-        data = joblib.load(filepath)
-        self.model = data["model"]
-        self.feature_names = data["features"]
-        self.model_type = data["type"]
-        self.uncertainty_method = data.get("uncertainty_method", "ensemble")
-        self.conformal_q_hat = data.get("conformal_q_hat", 0.50)
-        self.is_trained = True
+        self.inner_model.load(filepath)
+        self.is_trained = self.inner_model.is_trained
+        self.feature_names = self.inner_model.feature_names
 
-# ── 3. AI Dead Reckoning Trajectory Reconstruction ───────────────────────────
+    def export_embedded_rules(self, filepath: str):
+        EdgeModelExporter._export_embedded_rules(self.inner_model, filepath)
+
+
 def reconstruct_ai_dr_trajectory(
     df: pd.DataFrame,
     t_pred: np.ndarray,

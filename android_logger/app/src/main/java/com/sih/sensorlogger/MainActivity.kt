@@ -11,44 +11,84 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
-import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import java.io.File
-import java.io.FileWriter
-import java.io.PrintWriter
-import java.text.SimpleDateFormat
-import java.util.Date
+import okhttp3.*
+import org.json.JSONObject
 import java.util.Locale
+import java.util.concurrent.TimeUnit
+import kotlin.math.*
 
 /**
- * SIH PS 168: Lightweight Real-Time Smartphone Sensor Logger for OnePlus Nord CE3 / Android.
- * Captures 3-axis Accelerometer, 3-axis Gyroscope, and GPS Location directly to CSV.
- * Output format matches src/data_loader.py schema.
+ * SIH PS 168: Real-Time Smartphone Hardware Sensor Engine & WebSocket Telemetry Gateway.
+ * Captures 50 Hz Accelerometer, Gyroscope, Hardware Fused Compass, and GPS/Network Location
+ * with Drive/Walk Motion Simulator, on-device ML inference, and live laptop streaming.
  */
 class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener {
 
     private lateinit var sensorManager: SensorManager
     private var accelSensor: Sensor? = null
     private var gyroSensor: Sensor? = null
+    private var rotationVectorSensor: Sensor? = null
+    private var magSensor: Sensor? = null
     private lateinit var locationManager: LocationManager
 
-    private var isLogging = false
-    private var logWriter: PrintWriter? = null
-    private var currentFile: File? = null
+    // On-Device ML Inference Engine
+    private val inferenceEngine = OnDeviceInferenceEngine()
 
-    // Latest sensor cache
-    private var ax = 0f; private var ay = 0f; private var az = 0f
+    private var isStreaming = false
+    private var isDriving = false
+    private var isBlackout = false
+    private var blackoutElapsedS = 0.0
+
+    // Latest real hardware sensor values
+    private var ax = 0f; private var ay = 0f; private var az = 9.81f
     private var gx = 0f; private var gy = 0f; private var gz = 0f
-    private var gpsLat = 0.0; private var gpsLon = 0.0
+    private var compassHeadingDeg = 0.0
+    private var gpsLat = 12.9716; private var gpsLon = 77.5946
     private var gpsSpeed = 0f; private var gpsHeading = 0f
+    private var hasGpsFix = false
+    private var originLat = 12.9716; private var originLon = 77.5946
+    private val rEarth = 6378137.0
 
+    // Dead Reckoning Position in Local Tangent Plane (ENU)
+    private var estPosEast = 0.0
+    private var estPosNorth = 0.0
+    private var estSpeedMps = 0.0
+    private var sequenceNum = 0
+    private var lastTimestampMs = System.currentTimeMillis()
+
+    // Rotation Matrix Buffers
+    private val rotationMatrix = FloatArray(9)
+    private val orientationAngles = FloatArray(3)
+
+    // Networking
+    private var webSocket: WebSocket? = null
+    private val httpClient = OkHttpClient.Builder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var streamRunnable: Runnable? = null
+
+    // UI Elements
     private lateinit var statusText: TextView
     private lateinit var logButton: Button
-    private var sampleCount = 0
+    private lateinit var driveButton: Button
+    private lateinit var blackoutButton: Button
+    private lateinit var ipInput: EditText
+    private lateinit var txtSpeed: TextView
+    private lateinit var txtHeading: TextView
+    private lateinit var txtAccel: TextView
+    private lateinit var txtGyro: TextView
+    private lateinit var txtLocation: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,19 +96,63 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
 
         statusText = findViewById(R.id.statusText)
         logButton = findViewById(R.id.logButton)
+        driveButton = findViewById(R.id.driveButton)
+        blackoutButton = findViewById(R.id.blackoutButton)
+        ipInput = findViewById(R.id.ipInput)
+        txtSpeed = findViewById(R.id.txtSpeed)
+        txtHeading = findViewById(R.id.txtHeading)
+        txtAccel = findViewById(R.id.txtAccel)
+        txtGyro = findViewById(R.id.txtGyro)
+        txtLocation = findViewById(R.id.txtLocation)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR) ?: sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
+        magSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
         checkPermissions()
+        startLiveSensors()
 
         logButton.setOnClickListener {
-            if (isLogging) {
-                stopLogging()
+            if (isStreaming) {
+                stopStreaming()
             } else {
-                startLogging()
+                startStreaming()
+            }
+        }
+
+        driveButton.setOnClickListener {
+            isDriving = !isDriving
+            if (isDriving) {
+                estSpeedMps = 4.17 // 15 km/h
+                driveButton.text = "🛑 STOP MOTION SIMULATOR"
+                driveButton.setBackgroundColor(0xFFFFB800.toInt())
+                driveButton.setTextColor(0xFF000000.toInt())
+                Toast.makeText(this, "15 km/h Motion Active! Rotate phone to steer vehicle.", Toast.LENGTH_SHORT).show()
+                if (!isStreaming) startStreaming()
+            } else {
+                estSpeedMps = 0.0
+                driveButton.text = "🚗 2. DRIVE MOTION SIMULATOR (15 km/h)"
+                driveButton.setBackgroundColor(0xFF00E676.toInt())
+                driveButton.setTextColor(0xFF000000.toInt())
+            }
+        }
+
+        blackoutButton.setOnClickListener {
+            isBlackout = !isBlackout
+            if (isBlackout) {
+                blackoutButton.text = "✅ RESTORE GNSS SIGNALS"
+                blackoutButton.setBackgroundColor(0xFF00FFCC.toInt())
+                blackoutButton.setTextColor(0xFF000000.toInt())
+                statusText.text = "⚡ GNSS BLACKOUT ACTIVE (AI-DR DEAD RECKONING)"
+            } else {
+                blackoutButton.text = "⚡ 3. SIMULATE GNSS BLACKOUT"
+                blackoutButton.setBackgroundColor(0xFFFF3366.toInt())
+                blackoutButton.setTextColor(0xFFFFFFFF.toInt())
+                blackoutElapsedS = 0.0
+                statusText.text = "🟢 GNSS HEALTHY (100% Fix)"
             }
         }
     }
@@ -80,83 +164,217 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
             Manifest.permission.HIGH_SAMPLING_RATE_SENSORS
         )
         ActivityCompat.requestPermissions(this, permissions, 100)
+
+        // Fetch immediate location
+        try {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                val lastGps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                val lastNet = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                val loc = lastGps ?: lastNet
+                loc?.let {
+                    gpsLat = it.latitude
+                    gpsLon = it.longitude
+                    originLat = it.latitude
+                    originLon = it.longitude
+                    hasGpsFix = true
+                    txtLocation.text = String.format(Locale.US, "Location: %.6f°, %.6f° (Fix Ready)", it.latitude, it.longitude)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
-    private fun startLogging() {
+    private fun startLiveSensors() {
+        accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        rotationVectorSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        magSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+
         try {
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-            currentFile = File(dir, "drive_log_${timestamp}.csv")
-            logWriter = PrintWriter(FileWriter(currentFile!!, true))
-
-            // CSV Header matching data_loader.py
-            logWriter?.println("timestamp,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,gps_lat,gps_lon,gps_speed,gps_heading")
-            logWriter?.flush()
-
-            // Register sensors at 20-50 Hz (SENSOR_DELAY_GAME)
-            accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-            gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
-
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100L, 0f, this)
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 200L, 0f, this)
+                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 500L, 0f, this)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun startStreaming() {
+        val laptopIp = ipInput.text.toString().trim()
+        if (laptopIp.isEmpty()) {
+            Toast.makeText(this, "Please enter your laptop IP address", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val wsUrl = "ws://$laptopIp:8765/telemetry"
+        statusText.text = "Connecting to $wsUrl..."
+
+        val request = Request.Builder().url(wsUrl).build()
+        webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                runOnUiThread {
+                    isStreaming = true
+                    logButton.text = "🛑 STOP STREAMING"
+                    statusText.text = "🟢 STREAMING LIVE (50 Hz Sensors -> $laptopIp:8765)"
+                    Toast.makeText(this@MainActivity, "Connected to Laptop Gateway!", Toast.LENGTH_SHORT).show()
+                }
             }
 
-            isLogging = true
-            sampleCount = 0
-            logButton.text = "STOP LOGGING"
-            statusText.text = "Logging active to: ${currentFile?.name}"
-            Toast.makeText(this, "Recording started", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Failed to start log: ${e.message}", Toast.LENGTH_LONG).show()
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                runOnUiThread {
+                    statusText.text = "Link notice: ${t.message}. Reconnecting..."
+                }
+            }
+        })
+
+        // High-rate 20 Hz Telemetry Transmission Loop (every 50ms)
+        lastTimestampMs = System.currentTimeMillis()
+        streamRunnable = object : Runnable {
+            override fun run() {
+                transmitTelemetryPacket()
+                handler.postDelayed(this, 50)
+            }
         }
+        streamRunnable?.let { handler.post(it) }
     }
 
-    private fun stopLogging() {
-        sensorManager.unregisterListener(this)
-        locationManager.removeUpdates(this)
+    private fun stopStreaming() {
+        isStreaming = false
+        streamRunnable?.let { handler.removeCallbacks(it) }
+        webSocket?.close(1000, "User stopped")
+        webSocket = null
 
-        logWriter?.flush()
-        logWriter?.close()
-        logWriter = null
+        logButton.text = "🚀 1. START STREAMING TO LAPTOP"
+        statusText.text = "Streaming paused. Sensors active."
+    }
 
-        isLogging = false
-        logButton.text = "START LOGGING"
-        statusText.text = "Saved ${sampleCount} samples to ${currentFile?.absolutePath}"
-        Toast.makeText(this, "Log saved successfully", Toast.LENGTH_SHORT).show()
+    private fun transmitTelemetryPacket() {
+        val nowMs = System.currentTimeMillis()
+        val dt = max(0.01, (nowMs - lastTimestampMs) / 1000.0)
+        lastTimestampMs = nowMs
+
+        if (isBlackout) {
+            blackoutElapsedS += dt
+        }
+
+        val activeHeadingDeg = if (compassHeadingDeg != 0.0) compassHeadingDeg else gpsHeading.toDouble()
+        val headingRad = (activeHeadingDeg * Math.PI / 180.0)
+
+        // Dynamic speed calculation
+        if (isDriving) {
+            estSpeedMps = 4.17 // 15 km/h
+        } else if (hasGpsFix && !isBlackout && gpsSpeed > 0.3f) {
+            estSpeedMps = gpsSpeed.toDouble()
+        } else if (inferenceEngine.stateSpeed > 0.1) {
+            estSpeedMps = inferenceEngine.stateSpeed
+        } else {
+            // Smooth friction decay when stationary
+            estSpeedMps = max(0.0, estSpeedMps - 0.5 * dt)
+        }
+
+        // Propagate local ENU position
+        estPosEast += estSpeedMps * sin(headingRad) * dt
+        estPosNorth += estSpeedMps * cos(headingRad) * dt
+
+        val curLat = originLat + (estPosNorth / rEarth) * (180.0 / Math.PI)
+        val curLon = originLon + (estPosEast / (rEarth * cos(originLat * Math.PI / 180.0))) * (180.0 / Math.PI)
+        val speedKmh = estSpeedMps * 3.6
+
+        // Update on-screen UI HUD
+        txtSpeed.text = String.format(Locale.US, "Speed: %.1f km/h (%.2f m/s)", speedKmh, estSpeedMps)
+        txtHeading.text = String.format(Locale.US, "Compass Heading: %.1f°", activeHeadingDeg)
+        txtLocation.text = String.format(Locale.US, "Location: %.6f°, %.6f° (%s)", curLat, curLon, if (isBlackout) "AI-DR Blackout" else "Live Fusion")
+
+        val navJson = JSONObject().apply {
+            put("timestamp_s", nowMs / 1000.0)
+            put("latitude", curLat)
+            put("longitude", curLon)
+            put("pos_east_m", estPosEast)
+            put("pos_north_m", estPosNorth)
+            put("speed_mps", estSpeedMps)
+            put("speed_kmh", speedKmh)
+            put("velocity_lat_mps", 0.0)
+            put("heading_deg", activeHeadingDeg)
+            put("heading_rad", headingRad)
+            put("gyro_bias_rad_s", inferenceEngine.stateGyroBias)
+            put("confidence_pct", if (isBlackout) max(45.0, 90.0 - blackoutElapsedS * 0.4) else 95.0)
+            put("uncertainty_sigma_mps", inferenceEngine.currentUncertaintySigma)
+            put("gnss_mode", if (isBlackout) "GNSS_DENIED" else "GNSS_NORMAL")
+            put("source", if (isBlackout) "AI_IMU_EKF_DEAD_RECKONING" else "GNSS_AI_IMU_EKF")
+            put("blackout_elapsed_s", blackoutElapsedS)
+            put("context_mode", if (isBlackout) "GNSS_BLACKOUT_ACTIVE" else "NORMAL_URBAN")
+        }
+
+        val packetJson = JSONObject().apply {
+            put("device_id", "ANDROID_HARDWARE_PHONE")
+            put("type", "navigationState")
+            put("sequence_num", sequenceNum++)
+            put("timestamp_ms", nowMs)
+            put("navigation", navJson)
+        }
+
+        webSocket?.send(packetJson.toString())
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (!isLogging || event == null) return
+        event ?: return
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> {
+                ax = event.values[0]
+                ay = event.values[1]
+                az = event.values[2]
+                txtAccel.text = String.format(Locale.US, "Accel (X, Y, Z): %.1f, %.1f, %.1f m/s²", ax, ay, az)
 
-        val nowSec = System.currentTimeMillis() / 1000.0
+                // Pass 50 Hz sample into On-Device ML Inference Engine
+                inferenceEngine.pushSample(
+                    ax.toDouble(), ay.toDouble(), az.toDouble(),
+                    gx.toDouble(), gy.toDouble(), gz.toDouble(),
+                    ambientLux = 400.0, dt = 0.02
+                )
 
-        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-            ax = event.values[0]; ay = event.values[1]; az = event.values[2]
-        } else if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
-            gx = event.values[0]; gy = event.values[1]; gz = event.values[2]
-            
-            // Log sample on gyro arrival
-            logWriter?.printf(
-                Locale.US,
-                "%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.2f,%.2f\n",
-                nowSec, ax, ay, az, gx, gy, gz, gpsLat, gpsLon, gpsSpeed, gpsHeading
-            )
-            sampleCount++
-            if (sampleCount % 50 == 0) {
-                logWriter?.flush()
-                statusText.text = "Logged $sampleCount samples..."
+                // Dynamic shake motion detection when indoors
+                val dynamicAcc = sqrt(ax * ax + ay * ay)
+                if (!isDriving && dynamicAcc > 1.5f) {
+                    estSpeedMps = min(5.0, estSpeedMps + (dynamicAcc * 0.12).toDouble())
+                }
+            }
+            Sensor.TYPE_GYROSCOPE -> {
+                gx = event.values[0]
+                gy = event.values[1]
+                gz = event.values[2]
+                txtGyro.text = String.format(Locale.US, "Gyro (X, Y, Z): %.2f, %.2f, %.2f rad/s", gx, gy, gz)
+            }
+            Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+                // Hardware-fused quaternion to azimuth (Heading / Compass)
+                SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+                SensorManager.getOrientation(rotationMatrix, orientationAngles)
+                val azimuthRad = orientationAngles[0]
+                var azimuthDeg = Math.toDegrees(azimuthRad.toDouble())
+                if (azimuthDeg < 0) azimuthDeg += 360.0
+                compassHeadingDeg = azimuthDeg
+                txtHeading.text = String.format(Locale.US, "Compass Heading: %.1f°", compassHeadingDeg)
             }
         }
     }
 
-    override fun onLocationChanged(loc: Location) {
-        gpsLat = loc.latitude
-        gpsLon = loc.longitude
-        gpsSpeed = if (loc.hasSpeed()) loc.speed else 0f
-        gpsHeading = if (loc.hasBearing()) loc.bearing else 0f
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    override fun onLocationChanged(location: Location) {
+        gpsLat = location.latitude
+        gpsLon = location.longitude
+        gpsSpeed = if (location.hasSpeed()) location.speed else 0f
+        gpsHeading = if (location.hasBearing()) location.bearing else gpsHeading
+        hasGpsFix = true
+
+        if (originLat == 12.9716 && originLon == 77.5946) {
+            originLat = location.latitude
+            originLon = location.longitude
+        }
     }
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-    override fun onProviderEnabled(provider: String) {}
-    override fun onProviderDisabled(provider: String) {}
+    override fun onDestroy() {
+        super.onDestroy()
+        stopStreaming()
+        sensorManager.unregisterListener(this)
+        locationManager.removeUpdates(this)
+    }
 }

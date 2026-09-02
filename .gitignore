@@ -30,10 +30,16 @@ venv/
 data/IO-VNBD/
 data/IO-VNBD-repo/
 
-# Android / Gradle
+# Android / Flutter / Gradle
 .gradle/
+**/build/
+**/.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
 android_logger/**/build/
 android_logger/**/.cxx/
+flutter_app/build/
+flutter_app/android/app/build/
 *.apk
 *.aab
 local.properties

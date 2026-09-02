@@ -1,40 +1,180 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:padding="24dp"
-    android:background="#0F172A">
+    android:background="#0A0D14"
+    android:fillViewport="true">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="SIH PS 168\nReal-Time Sensor Logger"
-        android:textAlignment="center"
-        android:textColor="#F8FAFC"
-        android:textSize="22sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="24dp" />
-
-    <TextView
-        android:id="@+id/statusText"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Ready to record. Mount phone securely."
-        android:textColor="#94A3B8"
-        android:textSize="14sp"
-        android:gravity="center"
-        android:layout_marginBottom="32dp" />
+        android:orientation="vertical"
+        android:padding="20dp"
+        android:gravity="center_horizontal">
 
-    <Button
-        android:id="@+id/logButton"
-        android:layout_width="match_parent"
-        android:layout_height="64dp"
-        android:text="START LOGGING"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:backgroundTint="#2563EB"
-        android:textColor="#FFFFFF" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="NAVPULSE LOCALIZER"
+            android:textAlignment="center"
+            android:textColor="#00FFCC"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.05" />
 
-</LinearLayout>
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="SIH 2026 PS-168 • AI-DR ENGINE"
+            android:textColor="#94A3B8"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="14dp" />
+
+        <!-- IP Input Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#161B26"
+            android:padding="12dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="LAPTOP GATEWAY IP (PORT 8765)"
+                android:textColor="#8B949E"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="4dp" />
+
+            <EditText
+                android:id="@+id/ipInput"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:text="10.67.7.205"
+                android:hint="10.67.7.205"
+                android:textColor="#FFFFFF"
+                android:textColorHint="#64748B"
+                android:background="#0A0D14"
+                android:padding="10dp"
+                android:textSize="14sp"
+                android:fontFamily="monospace" />
+        </LinearLayout>
+
+        <!-- Main Action Buttons -->
+        <Button
+            android:id="@+id/logButton"
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:text="🚀 1. START STREAMING TO LAPTOP"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:backgroundTint="#00FFCC"
+            android:textColor="#000000"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/driveButton"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="🚗 2. DRIVE MOTION SIMULATOR (15 km/h)"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:backgroundTint="#00E676"
+            android:textColor="#000000"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/blackoutButton"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:text="⚡ 3. SIMULATE GNSS BLACKOUT"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:backgroundTint="#FF3366"
+            android:textColor="#FFFFFF"
+            android:layout_marginBottom="14dp" />
+
+        <!-- Live Sensor Readings HUD Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#161B26"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="LIVE SENSORS &amp; AI-DR HUD"
+                android:textColor="#00FFCC"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="10dp" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Status: Ready to stream."
+                android:textColor="#00E676"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp" />
+
+            <TextView
+                android:id="@+id/txtSpeed"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Speed: 0.0 km/h (0.00 m/s)"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/txtHeading"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Compass Heading: 0.0°"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp"
+                android:fontFamily="monospace"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/txtAccel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Accel (X, Y, Z): 0.0, 0.0, 9.8 m/s²"
+                android:textColor="#8B949E"
+                android:textSize="12sp"
+                android:fontFamily="monospace"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/txtGyro"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Gyro (X, Y, Z): 0.00, 0.00, 0.00 rad/s"
+                android:textColor="#8B949E"
+                android:textSize="12sp"
+                android:fontFamily="monospace"
+                android:layout_marginBottom="6dp" />
+
+            <TextView
+                android:id="@+id/txtLocation"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Location: 12.971600°, 77.594600°"
+                android:textColor="#8B949E"
+                android:textSize="12sp"
+                android:fontFamily="monospace" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>
