@@ -34,21 +34,18 @@ def get_results_hash() -> str:
 def verify_confidence_scaling_is_live():
     """
     Stage A: Proves the confidence-aware EKF code path is actually executing.
-    Runs EKF on a short slice of S-Vfa02 with sigma=0 (max trust) vs sigma=10 (min trust).
+    Runs the EKF on a short slice with sigma=0 (max trust) vs sigma=10 (min trust).
     Asserts the resulting fused_pos_x arrays are DIFFERENT.
     This would fail if the new code were shadowed or bypassed.
     """
-    from src.data_loader import load_real_iovnbd_drive
     from src.feature_engineering import extract_window_features
     from src.speed_model import SpeedRegressorModel, reconstruct_ai_dr_trajectory
     import src.fusion_ekf as fek
 
-    drive = load_real_iovnbd_drive(
-        os.path.join(PROJECT_ROOT, "data", "IO-VNBD-repo",
-            "Synchronised V abd S datasets", "Categorised IOVNB Dataset",
-            "Vf (Driver E)", "V-Vfa02", "S-Vfa02.csv"),
-        driver_id="E", max_samples=300
-    )
+    # Hardcoded the gitignored IO-VNBD path, so this crashed on a fresh clone. Route
+    # through the suite loader instead, which falls back to data/samples with a banner.
+    from src.data_loader import get_real_iovnbd_benchmark_suite
+    drive = get_real_iovnbd_benchmark_suite(max_samples_per_drive=300)["test_drives"][0]
     df = drive.get_data()
     model = SpeedRegressorModel()
     model.load(os.path.join(PROJECT_ROOT, "outputs", "models", "speed_regressor.joblib"))
@@ -131,8 +128,8 @@ def main():
     print("  - Figure 3: outputs/figures/03_full_trajectory_comparison.png")
     print("  - Metrics JSON: outputs/metrics/benchmark_results.json")
     print("  - Metrics MD:   outputs/metrics/benchmark_summary.md")
-    print("  - Embedded Model: outputs/models/embedded_rules.json")
-    print("    (Feature schema for on-device Kotlin inference engine)")
+    print("  - On-device model: outputs/models/ondevice_model.json")
+    print("    (Gradient-boosted trees + golden vectors for the Kotlin engine)")
     print("=" * 80)
 
 if __name__ == "__main__":

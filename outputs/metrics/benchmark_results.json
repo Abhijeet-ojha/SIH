@@ -1,270 +1,267 @@
 {
   "multi_drive_stats": {
-    "num_drives": 6,
+    "num_drives": 4,
     "naive_drift_pct": {
-      "mean": 363.67,
-      "std": 557.06
+      "mean": 40.45,
+      "std": 28.3
     },
     "naive_blackout_terminal_m": {
-      "mean": 2285.58,
-      "std": 2009.71
+      "mean": 530.19,
+      "std": 419.74
     },
     "ai_drift_pct": {
-      "mean": 48.52,
-      "std": 22.7
+      "mean": 75.52,
+      "std": 55.64
     },
     "ai_blackout_terminal_m": {
-      "mean": 631.46,
-      "std": 366.63
+      "mean": 1030.88,
+      "std": 308.97
     },
     "fused_blackout_max_m": {
-      "mean": 425.36,
-      "std": 325.07
+      "mean": 703.42,
+      "std": 82.37
     },
     "fused_blackout_terminal_exit_m": {
-      "mean": 412.96,
-      "std": 316.29
+      "mean": 703.42,
+      "std": 82.37
     },
     "fused_settled_reacquisition_m": {
-      "mean": 20.54,
-      "std": 16.8
+      "mean": 1.34,
+      "std": 0.91
     },
     "fused_final_drift_m": {
-      "mean": 16.5,
-      "std": 21.15
+      "mean": 2.22,
+      "std": 2.65
     },
     "fused_rmse_m": {
-      "mean": 132.51,
-      "std": 97.97
-    }
+      "mean": 219.58,
+      "std": 38.97
+    },
+    "naive_rmse_m": {
+      "mean": 640.42,
+      "std": 470.81
+    },
+    "ai_rmse_m": {
+      "mean": 1190.1,
+      "std": 324.36
+    },
+    "fused_blackout_drift_pct": {
+      "mean": 79.43,
+      "std": 43.39
+    },
+    "naive_blackout_drift_pct": {
+      "mean": 46.34,
+      "std": 39.44
+    },
+    "ai_blackout_drift_pct": {
+      "mean": 116.26,
+      "std": 78.15
+    },
+    "num_meeting_target": 0
   },
   "per_drive_metrics": {
-    "S-S3a": {
+    "drive_03_test_urban": {
       "driver_id": "A",
+      "primary_metric": {
+        "definition": "blackout_terminal_exit_error_m / blackout_distance_m",
+        "note": "open-loop dead-reckoning drift; GPS is off for the entire measured interval",
+        "blackout_distance_m": 960.19,
+        "fused_blackout_drift_pct": 66.35,
+        "naive_blackout_drift_pct": 112.86,
+        "ai_only_blackout_drift_pct": 81.63,
+        "target_pct": 10.0,
+        "meets_target": false
+      },
       "drive_summary": {
-        "total_duration_sec": 299.899,
-        "total_distance_m": 2890.03,
+        "total_duration_sec": 300.0012797329413,
+        "total_distance_m": 3154.67,
         "blackout_duration_sec": 90.0,
-        "blackout_distance_m": 769.75
+        "blackout_distance_m": 960.19
       },
       "naive_dead_reckoning": {
-        "final_drift_m": 304.85,
-        "drift_pct_distance": 10.55,
-        "max_error_m": 736.17,
-        "rmse_m": 478.07,
-        "blackout_max_error_m": 548.02,
-        "blackout_terminal_exit_error_m": 496.51
+        "blackout_drift_pct": 112.86,
+        "final_drift_m": 2726.68,
+        "drift_pct_distance_CLOSED_LOOP": 86.43,
+        "max_error_m": 2726.68,
+        "rmse_m": 1247.87,
+        "blackout_max_error_m": 1086.37,
+        "blackout_terminal_exit_error_m": 1083.62
       },
       "ai_dead_reckoning_pure": {
-        "final_drift_m": 2098.97,
-        "drift_pct_distance": 72.63,
-        "max_error_m": 2101.84,
-        "rmse_m": 1129.92,
-        "blackout_max_error_m": 839.31,
-        "blackout_terminal_exit_error_m": 824.68
+        "blackout_drift_pct": 81.63,
+        "final_drift_m": 1563.81,
+        "drift_pct_distance_CLOSED_LOOP": 49.57,
+        "max_error_m": 1654.34,
+        "rmse_m": 1012.58,
+        "blackout_max_error_m": 783.83,
+        "blackout_terminal_exit_error_m": 783.83
       },
       "ai_dr_gnss_ekf_fusion": {
-        "final_drift_m": 4.43,
-        "drift_pct_distance": 0.15,
-        "max_error_m": 543.01,
-        "rmse_m": 161.83,
-        "blackout_max_error_m": 543.01,
-        "blackout_terminal_exit_error_m": 528.98,
-        "post_reacquisition_settled_error_m": 10.29
-      },
-      "improvements": {
-        "drift_reduction_vs_naive_pct": 98.55,
-        "blackout_error_reduction_pct": -6.54
-      }
-    },
-    "S-S3b": {
-      "driver_id": "A",
-      "drive_summary": {
-        "total_duration_sec": 299.89899999999756,
-        "total_distance_m": 1432.68,
-        "blackout_duration_sec": 90.0,
-        "blackout_distance_m": 516.28
-      },
-      "naive_dead_reckoning": {
-        "final_drift_m": 960.91,
-        "drift_pct_distance": 67.07,
-        "max_error_m": 960.91,
-        "rmse_m": 468.37,
-        "blackout_max_error_m": 364.65,
-        "blackout_terminal_exit_error_m": 88.29
-      },
-      "ai_dead_reckoning_pure": {
-        "final_drift_m": 307.0,
-        "drift_pct_distance": 21.43,
-        "max_error_m": 358.1,
-        "rmse_m": 200.88,
-        "blackout_max_error_m": 226.68,
-        "blackout_terminal_exit_error_m": 222.88
-      },
-      "ai_dr_gnss_ekf_fusion": {
-        "final_drift_m": 3.63,
-        "drift_pct_distance": 0.25,
-        "max_error_m": 209.99,
-        "rmse_m": 84.51,
-        "blackout_max_error_m": 209.99,
-        "blackout_terminal_exit_error_m": 206.6,
-        "post_reacquisition_settled_error_m": 25.31
-      },
-      "improvements": {
-        "drift_reduction_vs_naive_pct": 99.62,
-        "blackout_error_reduction_pct": -134.0
-      }
-    },
-    "S-M": {
-      "driver_id": "B",
-      "drive_summary": {
-        "total_duration_sec": 299.90000000000003,
-        "total_distance_m": 1221.2,
-        "blackout_duration_sec": 90.0,
-        "blackout_distance_m": 95.98
-      },
-      "naive_dead_reckoning": {
-        "final_drift_m": 19338.07,
-        "drift_pct_distance": 1583.53,
-        "max_error_m": 19338.07,
-        "rmse_m": 8541.86,
-        "blackout_max_error_m": 5019.07,
-        "blackout_terminal_exit_error_m": 5019.07
-      },
-      "ai_dead_reckoning_pure": {
-        "final_drift_m": 273.52,
-        "drift_pct_distance": 22.4,
-        "max_error_m": 284.74,
-        "rmse_m": 160.06,
-        "blackout_max_error_m": 158.61,
-        "blackout_terminal_exit_error_m": 158.61
-      },
-      "ai_dr_gnss_ekf_fusion": {
-        "final_drift_m": 1.1,
-        "drift_pct_distance": 0.09,
-        "max_error_m": 149.44,
-        "rmse_m": 28.13,
-        "blackout_max_error_m": 50.38,
-        "blackout_terminal_exit_error_m": 41.35,
-        "post_reacquisition_settled_error_m": 7.02
+        "blackout_drift_pct": 66.35,
+        "final_drift_m": 0.26,
+        "drift_pct_distance_CLOSED_LOOP": 0.01,
+        "max_error_m": 637.11,
+        "rmse_m": 191.63,
+        "blackout_max_error_m": 637.11,
+        "blackout_terminal_exit_error_m": 637.11,
+        "post_reacquisition_settled_error_m": 0.73
       },
       "improvements": {
         "drift_reduction_vs_naive_pct": 99.99,
-        "blackout_error_reduction_pct": 99.18
+        "blackout_error_reduction_pct": 41.21
       }
     },
-    "S-Y1": {
-      "driver_id": "D",
+    "drive_04_test_highway": {
+      "driver_id": "A",
+      "primary_metric": {
+        "definition": "blackout_terminal_exit_error_m / blackout_distance_m",
+        "note": "open-loop dead-reckoning drift; GPS is off for the entire measured interval",
+        "blackout_distance_m": 2046.73,
+        "fused_blackout_drift_pct": 35.02,
+        "naive_blackout_drift_pct": 38.58,
+        "ai_only_blackout_drift_pct": 63.0,
+        "target_pct": 10.0,
+        "meets_target": false
+      },
       "drive_summary": {
-        "total_duration_sec": 299.9000000000033,
-        "total_distance_m": 3062.69,
+        "total_duration_sec": 249.9965580332184,
+        "total_distance_m": 5594.48,
         "blackout_duration_sec": 90.0,
-        "blackout_distance_m": 777.51
+        "blackout_distance_m": 2046.73
       },
       "naive_dead_reckoning": {
-        "final_drift_m": 714.61,
-        "drift_pct_distance": 23.33,
-        "max_error_m": 838.25,
-        "rmse_m": 515.6,
-        "blackout_max_error_m": 428.81,
-        "blackout_terminal_exit_error_m": 407.06
+        "blackout_drift_pct": 38.58,
+        "final_drift_m": 2029.24,
+        "drift_pct_distance_CLOSED_LOOP": 36.27,
+        "max_error_m": 2029.24,
+        "rmse_m": 949.85,
+        "blackout_max_error_m": 789.72,
+        "blackout_terminal_exit_error_m": 789.72
       },
       "ai_dead_reckoning_pure": {
-        "final_drift_m": 1074.77,
-        "drift_pct_distance": 35.09,
-        "max_error_m": 1092.19,
-        "rmse_m": 682.64,
-        "blackout_max_error_m": 549.34,
-        "blackout_terminal_exit_error_m": 540.18
+        "blackout_drift_pct": 63.0,
+        "final_drift_m": 2388.78,
+        "drift_pct_distance_CLOSED_LOOP": 42.7,
+        "max_error_m": 2388.78,
+        "rmse_m": 1306.95,
+        "blackout_max_error_m": 1289.48,
+        "blackout_terminal_exit_error_m": 1289.48
       },
       "ai_dr_gnss_ekf_fusion": {
-        "final_drift_m": 3.11,
-        "drift_pct_distance": 0.1,
-        "max_error_m": 547.07,
-        "rmse_m": 115.08,
-        "blackout_max_error_m": 547.07,
-        "blackout_terminal_exit_error_m": 538.26,
-        "post_reacquisition_settled_error_m": 54.28
+        "blackout_drift_pct": 35.02,
+        "final_drift_m": 1.34,
+        "drift_pct_distance_CLOSED_LOOP": 0.02,
+        "max_error_m": 716.87,
+        "rmse_m": 260.68,
+        "blackout_max_error_m": 716.87,
+        "blackout_terminal_exit_error_m": 716.87,
+        "post_reacquisition_settled_error_m": 0.94
       },
       "improvements": {
-        "drift_reduction_vs_naive_pct": 99.57,
-        "blackout_error_reduction_pct": -32.23
+        "drift_reduction_vs_naive_pct": 99.93,
+        "blackout_error_reduction_pct": 9.23
       }
     },
-    "S-Vfa02": {
-      "driver_id": "E",
+    "drive_04_test_urban": {
+      "driver_id": "A",
+      "primary_metric": {
+        "definition": "blackout_terminal_exit_error_m / blackout_distance_m",
+        "note": "open-loop dead-reckoning drift; GPS is off for the entire measured interval",
+        "blackout_distance_m": 550.1,
+        "fused_blackout_drift_pct": 151.38,
+        "naive_blackout_drift_pct": 19.22,
+        "ai_only_blackout_drift_pct": 251.12,
+        "target_pct": 10.0,
+        "meets_target": false
+      },
       "drive_summary": {
-        "total_duration_sec": 299.9,
-        "total_distance_m": 4216.41,
+        "total_duration_sec": 300.00019796888023,
+        "total_distance_m": 1651.77,
         "blackout_duration_sec": 90.0,
-        "blackout_distance_m": 1437.52
+        "blackout_distance_m": 550.1
       },
       "naive_dead_reckoning": {
-        "final_drift_m": 6389.47,
-        "drift_pct_distance": 151.54,
-        "max_error_m": 6420.62,
-        "rmse_m": 4061.62,
-        "blackout_max_error_m": 4239.29,
-        "blackout_terminal_exit_error_m": 4239.29
+        "blackout_drift_pct": 19.22,
+        "final_drift_m": 487.09,
+        "drift_pct_distance_CLOSED_LOOP": 29.49,
+        "max_error_m": 487.09,
+        "rmse_m": 210.01,
+        "blackout_max_error_m": 105.72,
+        "blackout_terminal_exit_error_m": 105.72
       },
       "ai_dead_reckoning_pure": {
-        "final_drift_m": 2839.3,
-        "drift_pct_distance": 67.34,
-        "max_error_m": 2855.32,
-        "rmse_m": 1356.45,
-        "blackout_max_error_m": 1236.55,
-        "blackout_terminal_exit_error_m": 1203.56
+        "blackout_drift_pct": 251.12,
+        "final_drift_m": 2834.85,
+        "drift_pct_distance_CLOSED_LOOP": 171.63,
+        "max_error_m": 2834.85,
+        "rmse_m": 1652.78,
+        "blackout_max_error_m": 1381.39,
+        "blackout_terminal_exit_error_m": 1381.39
       },
       "ai_dr_gnss_ekf_fusion": {
-        "final_drift_m": 59.38,
-        "drift_pct_distance": 1.41,
-        "max_error_m": 1023.22,
-        "rmse_m": 331.91,
-        "blackout_max_error_m": 1023.22,
-        "blackout_terminal_exit_error_m": 989.79,
-        "post_reacquisition_settled_error_m": 4.94
+        "blackout_drift_pct": 151.38,
+        "final_drift_m": 0.53,
+        "drift_pct_distance_CLOSED_LOOP": 0.03,
+        "max_error_m": 832.72,
+        "rmse_m": 254.94,
+        "blackout_max_error_m": 832.72,
+        "blackout_terminal_exit_error_m": 832.72,
+        "post_reacquisition_settled_error_m": 0.78
       },
       "improvements": {
-        "drift_reduction_vs_naive_pct": 99.07,
-        "blackout_error_reduction_pct": 76.65
+        "drift_reduction_vs_naive_pct": 99.89,
+        "blackout_error_reduction_pct": -687.64
       }
     },
-    "S-Vta1b": {
-      "driver_id": "E",
+    "drive_05_test_highway": {
+      "driver_id": "A",
+      "primary_metric": {
+        "definition": "blackout_terminal_exit_error_m / blackout_distance_m",
+        "note": "open-loop dead-reckoning drift; GPS is off for the entire measured interval",
+        "blackout_distance_m": 965.14,
+        "fused_blackout_drift_pct": 64.96,
+        "naive_blackout_drift_pct": 14.68,
+        "ai_only_blackout_drift_pct": 69.3,
+        "target_pct": 10.0,
+        "meets_target": false
+      },
       "drive_summary": {
-        "total_duration_sec": 95.30000000000018,
-        "total_distance_m": 1254.51,
-        "blackout_duration_sec": 25.300000000000182,
-        "blackout_distance_m": 218.58
+        "total_duration_sec": 250.00153989252112,
+        "total_distance_m": 3340.79,
+        "blackout_duration_sec": 90.0,
+        "blackout_distance_m": 965.14
       },
       "naive_dead_reckoning": {
-        "final_drift_m": 4340.7,
-        "drift_pct_distance": 346.01,
-        "max_error_m": 4340.7,
-        "rmse_m": 1951.11,
-        "blackout_max_error_m": 3463.23,
-        "blackout_terminal_exit_error_m": 3463.23
+        "blackout_drift_pct": 14.68,
+        "final_drift_m": 321.19,
+        "drift_pct_distance_CLOSED_LOOP": 9.61,
+        "max_error_m": 321.19,
+        "rmse_m": 153.96,
+        "blackout_max_error_m": 141.72,
+        "blackout_terminal_exit_error_m": 141.72
       },
       "ai_dead_reckoning_pure": {
-        "final_drift_m": 905.72,
-        "drift_pct_distance": 72.2,
-        "max_error_m": 907.35,
-        "rmse_m": 603.75,
-        "blackout_max_error_m": 843.7,
-        "blackout_terminal_exit_error_m": 838.85
+        "blackout_drift_pct": 69.3,
+        "final_drift_m": 1275.55,
+        "drift_pct_distance_CLOSED_LOOP": 38.18,
+        "max_error_m": 1376.73,
+        "rmse_m": 788.1,
+        "blackout_max_error_m": 668.83,
+        "blackout_terminal_exit_error_m": 668.83
       },
       "ai_dr_gnss_ekf_fusion": {
-        "final_drift_m": 27.35,
-        "drift_pct_distance": 2.18,
-        "max_error_m": 178.49,
-        "rmse_m": 73.6,
-        "blackout_max_error_m": 178.49,
-        "blackout_terminal_exit_error_m": 172.81,
-        "post_reacquisition_settled_error_m": 21.41
+        "blackout_drift_pct": 64.96,
+        "final_drift_m": 6.75,
+        "drift_pct_distance_CLOSED_LOOP": 0.2,
+        "max_error_m": 626.99,
+        "rmse_m": 171.06,
+        "blackout_max_error_m": 626.99,
+        "blackout_terminal_exit_error_m": 626.99,
+        "post_reacquisition_settled_error_m": 2.91
       },
       "improvements": {
-        "drift_reduction_vs_naive_pct": 99.37,
-        "blackout_error_reduction_pct": 95.01
+        "drift_reduction_vs_naive_pct": 97.9,
+        "blackout_error_reduction_pct": -342.41
       }
     }
   }

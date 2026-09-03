@@ -19,6 +19,23 @@ def compute_df_sha256(df: pd.DataFrame) -> str:
     data_bytes = df.values.tobytes()
     return hashlib.sha256(data_bytes).hexdigest()[:12]
 
+def pressure_to_altitude(pressure_hpa: np.ndarray) -> np.ndarray:
+    """
+    Barometric pressure -> altitude relative to the first sample, in metres.
+
+    Referenced to the drive's own first reading rather than sea level, because only the
+    *change* matters here and that sidesteps needing local QNH. Good to ~0.1 m over the
+    tens of metres a parking ramp or flyover spans; weather drift makes it useless over
+    hours, so re-reference whenever GPS altitude is healthy.
+    """
+    p = np.asarray(pressure_hpa, dtype=float)
+    p_ref = float(p[np.isfinite(p)][0]) if np.any(np.isfinite(p)) else 1013.25
+    return 44330.0 * (1.0 - np.power(p / p_ref, 1.0 / 5.255))
+
+def _path_length(x: np.ndarray, y: np.ndarray) -> float:
+    """Cumulative Euclidean path length, used as the ground truth for the speed-unit check."""
+    return float(np.sum(np.sqrt(np.diff(x)**2 + np.diff(y)**2)))
+
 def geodetic_to_enu(lat: np.ndarray, lon: np.ndarray, lat0: float, lon0: float) -> Tuple[np.ndarray, np.ndarray]:
     """Converts Lat/Lon to local East-North-Up (ENU) coordinates in meters."""
     lat_rad = np.deg2rad(lat)
@@ -65,21 +82,50 @@ class DriveDataset:
                 time_col = cols[k]
                 break
 
+        # The previous implementation clamped every dt <= 0 or > 1.0 to 0.1 s and
+        # cumsum'd the result, which fabricated a uniform 10 Hz timeline that did not
+        # exist. Symptom: duration_s came out as exactly samples * 0.1 for every drive in
+        # phase4_target_audit.csv, and any true interval >= 1 s was compressed 10x,
+        # inflating every derived acceleration to 17-33 m/s^2.
+        # Real timestamps are preserved here. Genuine gaps are recorded, never rewritten.
         if time_col is not None:
             raw_t = df[time_col].values.astype(float)
-            if "ms" in time_col.lower() or (np.max(raw_t) - np.min(raw_t) > 10000 and np.median(np.diff(raw_t)) > 10):
+            if "ms" in time_col.lower() or np.median(np.diff(raw_t)) > 10.0:
                 raw_t = raw_t / 1000.0
-            
-            dt_raw = np.diff(raw_t, prepend=raw_t[0])
-            dt_raw[dt_raw <= 0.0] = 0.1
-            dt_raw[dt_raw > 1.0] = 0.1
-            dt_raw[0] = 0.0
-            out["timestamp"] = np.cumsum(dt_raw)
+            raw_t = raw_t - raw_t[0]
+
+            # Non-monotonic samples are corrupt rows, not a timing convention. Drop them
+            # rather than inventing a timestamp; df is filtered in lockstep so every other
+            # column stays aligned.
+            keep = np.ones(len(raw_t), dtype=bool)
+            last = -np.inf
+            for i, ti in enumerate(raw_t):
+                if ti > last:
+                    last = ti
+                else:
+                    keep[i] = False
+            self.n_dropped_nonmonotonic = int(np.sum(~keep))
+            if self.n_dropped_nonmonotonic > 0:
+                df = df.loc[keep].reset_index(drop=True)
+                raw_t = raw_t[keep]
+            out["timestamp"] = raw_t
         else:
+            self.n_dropped_nonmonotonic = 0
             out["timestamp"] = np.arange(len(df)) * 0.1
 
-        dt = np.median(np.diff(out["timestamp"].values)) if len(df) > 1 else 0.1
-        if dt <= 0: dt = 0.1
+        t_vals = out["timestamp"].values
+        dt_arr = np.diff(t_vals, prepend=t_vals[0])
+        if len(dt_arr) > 1:
+            dt_arr[0] = dt_arr[1]
+        dt = float(np.median(dt_arr[dt_arr > 0])) if np.any(dt_arr > 0) else 0.1
+        if dt <= 0:
+            dt = 0.1
+        out["dt"] = dt_arr
+        # A gap is a logging dropout, not a sample. Downstream code must not integrate
+        # across one as though it were a normal step.
+        out["gap_mask"] = dt_arr > (3.0 * dt)
+        self.median_dt = dt
+        self.n_gaps = int(np.sum(out["gap_mask"].values))
 
         # 2. GPS Coordinates & ENU Local Plane
         lat_col = None
@@ -120,16 +166,40 @@ class DriveDataset:
 
         if speed_col is not None:
             raw_spd = df[speed_col].values.astype(float)
-            if "kmh" in speed_col.lower() or "km/h" in speed_col.lower():
-                spd_mps = raw_spd / 3.6
-            else:
-                spd_mps = raw_spd
+            # Do not trust the column header for units. IO-VNBD's header says
+            # "GPS Speed (Kmh)" while the audit shows a highway drive topping out at
+            # 6.7 m/s (24 km/h), which is not a highway. Settle it with physics instead:
+            # integral(v dt) must equal the GPS path length. Only one divisor can satisfy
+            # that, and the ratio between the candidates is 3.6x, so they are trivially
+            # separable.
+            path_len = _path_length(out["pos_x"].values, out["pos_y"].values)
+            header_says_kmh = "kmh" in speed_col.lower() or "km/h" in speed_col.lower()
+
+            candidates = {"m/s": 1.0, "km/h": 3.6}
+            errors = {}
+            for label, div in candidates.items():
+                integ = float(np.sum(np.clip(raw_spd / div, 0.0, 45.0) * dt_arr))
+                errors[label] = abs(integ - path_len) / max(path_len, 1e-6)
+
+            best = min(errors, key=errors.get)
+            self.speed_unit = best
+            self.speed_unit_divisor = candidates[best]
+            self.speed_integral_error = errors[best]
+            self.speed_unit_evidence = dict(errors)
+            self.speed_unit_header_conflict = header_says_kmh != (best == "km/h")
+
+            spd_mps = raw_spd / candidates[best]
             out["speed"] = np.clip(spd_mps, 0.0, 45.0)
         else:
             dx = np.diff(out["pos_x"].values, prepend=out["pos_x"].values[0])
             dy = np.diff(out["pos_y"].values, prepend=out["pos_y"].values[0])
-            calc_spd = np.sqrt(dx**2 + dy**2) / dt
+            calc_spd = np.sqrt(dx**2 + dy**2) / np.maximum(dt_arr, 1e-6)
             out["speed"] = np.clip(calc_spd, 0.0, 45.0)
+            self.speed_unit = "derived_from_position"
+            self.speed_unit_divisor = 1.0
+            self.speed_integral_error = 0.0
+            self.speed_unit_evidence = {}
+            self.speed_unit_header_conflict = False
 
         # 4. Heading (Native GPS Orientation or Course Over Ground Fallback)
         ori_col = None
@@ -191,9 +261,16 @@ class DriveDataset:
                     out["acc_z"] = df[cols[k]].values.astype(float)
                     break
 
-        if "acc_x" not in out.columns: out["acc_x"] = np.zeros(len(df))
-        if "acc_y" not in out.columns: out["acc_y"] = np.gradient(out["speed"].values, dt)
-        if "acc_z" not in out.columns: out["acc_z"] = np.ones(len(df)) * 9.80665
+        # These used to fall back to zeros / np.gradient(speed) / constant gravity. The
+        # acc_y fallback derived a *feature* from the *label*: if it ever fired, every
+        # metric in the repo was measuring the model reading its own answer key. Fail loudly
+        # instead - a drive without an accelerometer is not a drive we can do DR on.
+        missing_acc = [c for c in ("acc_x", "acc_y", "acc_z") if c not in out.columns]
+        if missing_acc:
+            raise ValueError(
+                f"{self.name}: missing accelerometer channel(s) {missing_acc}. "
+                f"Available columns: {sorted(cols.keys())}"
+            )
 
         # 6. Gyroscope (rad/s)
         for k, v in cols.items():
@@ -221,16 +298,48 @@ class DriveDataset:
                     out["gyro_z"] = df[cols[k]].values.astype(float)
                     break
 
-        if "gyro_x" not in out.columns: out["gyro_x"] = np.zeros(len(df))
-        if "gyro_y" not in out.columns: out["gyro_y"] = np.zeros(len(df))
-        if "gyro_z" not in out.columns: out["gyro_z"] = np.gradient(out["heading"].values, dt)
+        # gyro_z used to fall back to np.gradient(heading), i.e. the GPS course. That fed
+        # GPS-derived yaw into the EKF's dead-reckoning propagation, so the filter was
+        # reading GPS during the very blackout it was supposed to survive without it.
+        missing_gyro = [c for c in ("gyro_x", "gyro_y", "gyro_z") if c not in out.columns]
+        if missing_gyro:
+            raise ValueError(
+                f"{self.name}: missing gyroscope channel(s) {missing_gyro}. "
+                f"Available columns: {sorted(cols.keys())}"
+            )
 
-        # 7. Ambient Light (Simulated from dataset if not present)
-        if "light" in cols:
-            out["ambient_lux"] = df[cols["light"]].values.astype(float)
-        else:
-            # Default outdoor daylight ~ 1500 lux
-            out["ambient_lux"] = np.ones(len(df)) * 1500.0
+        # 7. Optional sensors. Absent in IO-VNBD, present in SHL and in our own Android
+        # logs. Each carries an availability flag so downstream code can tell "sensor read
+        # zero" from "sensor not fitted" - the old ambient_lux default of 1500 lux was
+        # indistinguishable from a real daylight reading and silently disabled the tunnel
+        # detector on every drive.
+        def _first(keys):
+            for k in keys:
+                if k in cols:
+                    return df[cols[k]].values.astype(float)
+            return None
+
+        lux = _first(["light", "ambient_lux", "illuminance"])
+        out["ambient_lux"] = lux if lux is not None else np.full(len(df), np.nan)
+        self.has_light = lux is not None
+
+        # Barometer -> relative altitude. ~0.1 m resolution, which is what makes
+        # multi-level parking and flyover-vs-service-road tractable.
+        pres = _first(["pressure", "barometer", "pressure (hpa)", "air_pressure"])
+        out["pressure_hpa"] = pres if pres is not None else np.full(len(df), np.nan)
+        self.has_barometer = pres is not None
+        out["baro_altitude_m"] = pressure_to_altitude(pres) if pres is not None else np.full(len(df), np.nan)
+
+        # Magnetometer -> absolute heading reference that bounds gyro drift in long blackouts.
+        for axis in ("x", "y", "z"):
+            m = _first([f"mag_{axis}", f"magnetometer {axis}", f"magnetic field {axis}", f"m{axis}"])
+            out[f"mag_{axis}"] = m if m is not None else np.full(len(df), np.nan)
+        self.has_magnetometer = not np.all(np.isnan(out["mag_x"].values))
+
+        # Step detector -> decisive walking evidence, free from the sensor hub.
+        steps = _first(["step_detector", "steps", "step_count"])
+        out["step_events"] = steps if steps is not None else np.zeros(len(df))
+        self.has_step_detector = steps is not None
 
         out["driver_id"] = self.driver_id
         return out
@@ -270,9 +379,54 @@ def load_real_iovnbd_drive(
     name = os.path.basename(filepath).replace(".csv", "") + name_suffix
     return DriveDataset(df, name=name, driver_id=driver_id, is_real_iovnbd=True)
 
+SYNTHETIC_BANNER = (
+    "\n" + "=" * 78 + "\n"
+    "  SYNTHETIC DATA - NOT A BENCHMARK RESULT\n"
+    "  data/IO-VNBD-repo/ was not found, so this run uses the generated stand-in\n"
+    "  drives in data/samples/. Numbers produced here describe a simulator, not a\n"
+    "  vehicle, and must not be quoted as accuracy figures anywhere.\n"
+    "  Acquire IO-VNBD (see docs/DATASETS.md) for real results.\n"
+    + "=" * 78 + "\n"
+)
+
+
+def get_sample_fallback_suite(max_samples_per_drive: int = 3000) -> Dict[str, Any]:
+    """
+    Stand-in suite built from data/samples/ so a fresh clone runs end to end.
+
+    The README Quick Start told people to run run_all.py, which needed the gitignored
+    dataset directory and crashed on a clean checkout. This makes the pipeline runnable
+    immediately - loudly labelled, so nobody mistakes the output for a benchmark.
+    """
+    proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sample_dir = os.path.join(proj_root, "data", "samples")
+    print(SYNTHETIC_BANNER)
+
+    files = sorted(os.listdir(sample_dir))
+    train = [f for f in files if "train" in f]
+    test = [f for f in files if "test" in f]
+
+    def _load(names):
+        return [
+            load_real_iovnbd_drive(os.path.join(sample_dir, n), driver_id="A",
+                                   max_samples=max_samples_per_drive)
+            for n in names
+        ]
+
+    return {
+        "train_drives": _load(train),
+        "test_drives": _load(test),
+        "provenance": "SYNTHETIC sample drives (data/samples) - not IO-VNBD, not a benchmark",
+        "is_synthetic": True,
+    }
+
+
 def get_real_iovnbd_benchmark_suite(max_samples_per_drive: int = 3000) -> Dict[str, Any]:
     proj_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo_base = os.path.join(proj_root, "data", "IO-VNBD-repo", "Synchronised V abd S datasets", "Categorised IOVNB Dataset")
+
+    if not os.path.isdir(repo_base):
+        return get_sample_fallback_suite(max_samples_per_drive)
 
     a_s1 = os.path.join(repo_base, "S (Driver A)", "S1", "S-S1.csv")
     a_s2 = os.path.join(repo_base, "S (Driver A)", "S2", "S-S2.csv")
@@ -316,5 +470,6 @@ def get_real_iovnbd_benchmark_suite(max_samples_per_drive: int = 3000) -> Dict[s
     return {
         "train_drives": train_drives,
         "test_drives": test_drives,
-        "provenance": "100% Real IO-VNBD Dataset (Coventry, UK)"
+        "provenance": "100% Real IO-VNBD Dataset (Coventry, UK)",
+        "is_synthetic": False,
     }

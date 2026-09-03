@@ -133,7 +133,8 @@ Evaluated on $N=6$ unseen real drives from the public IO-VNBD dataset (Coventry,
 
 | Metric | Naive Dead Reckoning (Baseline) | AI-DR Pure (ML Speed) | AI-DR + 6-State EKF Fusion (Final) | Improvement vs Baseline |
 | :--- | :--- | :--- | :--- | :--- |
-| **Cumulative Drift as % Distance** | **363.67% ± 557.06%** | 48.52% ± 22.70% | **< 0.05%** | **> 99.9%** reduction |
+| **Blackout drift % (PRIMARY: exit error / blackout distance)** | 46.34% ± 39.44% | 116.26% ± 78.15% | **79.43% ± 43.39%** | currently **worse than naive** |
+| Closed-loop drift % (GPS restored — not a DR number) | 40.45% ± 28.3% | 75.52% ± 55.64% | 2.22 m final | not a dead-reckoning result |
 | **90s Blackout Peak Drift** | 2285.58 m ± 2009.71 m | 631.46 m ± 366.63 m | **425.36 m ± 325.07 m** | **81.4%** reduction |
 | **90s Blackout Terminal Exit Error** | 2285.58 m ± 2009.71 m | 631.46 m ± 366.63 m | **412.96 m ± 316.29 m** | **81.9%** reduction |
 | **Post-Reacquisition Settled Error** | N/A (Diverges indefinitely) | N/A (Diverges linearly) | **20.54 m ± 16.80 m** | Re-converged within 5s |

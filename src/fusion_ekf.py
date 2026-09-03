@@ -8,6 +8,13 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, Optional, Dict, List
 
+try:
+    from .frame_alignment import align_frame
+    from .motion_gate import MotionGate
+except ImportError:  # direct script execution
+    from frame_alignment import align_frame
+    from motion_gate import MotionGate
+
 def wrap_angle(rad: float) -> float:
     return (rad + np.pi) % (2 * np.pi) - np.pi
 
@@ -20,16 +27,26 @@ class VehicleContextEngine:
         self.current_mode = "NORMAL_URBAN"
         self.tunnel_alert = False
 
-    def update_context(self, ambient_lux: float, speed_mps: float, acc_var: float, gyro_abs: float) -> str:
+    def update_context(self, ambient_lux: float, speed_mps: float, acc_var: float,
+                       gyro_abs: float, gate_state: Optional[str] = None) -> str:
+        # 0. Phone being handled. This outranks everything: if the body frame is no longer
+        #    the vehicle frame, no inertial quantity we derive from it means anything.
+        if gate_state == "PHONE_HANDLED":
+            self.current_mode = "PHONE_HANDLED"
+            self.tunnel_alert = False
+            return self.current_mode
+
         # 1. Standstill / Red Light Stop
-        if acc_var < 0.018 and gyro_abs < 0.01 and speed_mps < 0.5:
+        if gate_state == "STATIONARY" or (acc_var < 0.018 and gyro_abs < 0.01 and speed_mps < 0.5):
             self.current_mode = "STANDSTILL"
             self.tunnel_alert = False
             return self.current_mode
 
         # 2. Predictive Tunnel / Underground Parking Detection
-        # Sudden drop in ambient light (< 100 lux) while travelling at speed (> 4 m/s)
-        if ambient_lux < 100.0 and speed_mps > 4.0:
+        # Sudden drop in ambient light (< 100 lux) while travelling at speed (> 4 m/s).
+        # NaN when the phone has no light sensor, and NaN < 100 is False, so an absent
+        # sensor correctly disables this rather than silently reporting daylight.
+        if np.isfinite(ambient_lux) and ambient_lux < 100.0 and speed_mps > 4.0:
             self.current_mode = "PREDICTIVE_TUNNEL_BLACKOUT"
             self.tunnel_alert = True
             return self.current_mode
@@ -300,8 +317,21 @@ def run_fusion_pipeline(
     if ai_speed_std is None:
         ai_speed_std = np.ones(n) * 0.2
 
-    dt_arr = np.diff(t, prepend=t[0])
-    dt_arr[0] = dt_arr[1] if n > 1 else 0.1
+    dt_arr = df["dt"].values if "dt" in df.columns else np.diff(t, prepend=t[0])
+    if n > 1:
+        dt_arr = np.asarray(dt_arr, dtype=float).copy()
+        dt_arr[0] = dt_arr[1]
+
+    # Frame alignment + motion gate. gyro_z is no longer trusted as "yaw" - yaw is the
+    # gyro projected onto gravity, which is what it always should have been.
+    acc_mat = np.column_stack([df["acc_x"].values, df["acc_y"].values, df["acc_z"].values]).astype(float)
+    gyro_mat = np.column_stack([df["gyro_x"].values, df["gyro_y"].values, df["gyro_z"].values]).astype(float)
+    frame = align_frame(acc_mat, gyro_mat, dt_arr, speed=gps_v)
+    yaw_rate = frame["yaw_rate"]
+
+    step_events = df["step_events"].values if "step_events" in df.columns else None
+    gate = MotionGate().classify_frame(frame, speed_hint=ai_speed, step_events=step_events)
+    gate_state = gate["state"]
 
     context_engine = VehicleContextEngine()
 
@@ -336,10 +366,12 @@ def run_fusion_pipeline(
         curr_t = t[i]
         dt = dt_arr[i]
 
+        # Causal window only. This used to be [i-win, i+win], which let the filter see
+        # future accelerometer samples when deciding whether the vehicle was stopped -
+        # future data leaking into a supposedly real-time filter.
         s_idx = max(0, i - win)
-        e_idx = min(n, i + win)
-        acc_var = np.var(acc_x[s_idx:e_idx]) + np.var(acc_y[s_idx:e_idx])
-        gyro_abs = np.abs(gyro_z[i])
+        acc_var = np.var(acc_x[s_idx:i + 1]) + np.var(acc_y[s_idx:i + 1])
+        gyro_abs = np.abs(yaw_rate[i])
 
         # Multi-sensor context detection
         speed_for_context = min(float(ai_speed[i]), float(gps_v[i]))
@@ -347,18 +379,22 @@ def run_fusion_pipeline(
             ambient_lux=ambient_lux[i],
             speed_mps=speed_for_context,
             acc_var=acc_var,
-            gyro_abs=gyro_abs
+            gyro_abs=gyro_abs,
+            gate_state=gate_state[i]
         )
         context_modes.append(mode)
 
-        is_stopped = (mode == "STANDSTILL")
+        # Freeze on both standstill and phone-handling. The predict() stationary branch
+        # holds position and heading, so this is what stops a shaken phone from
+        # accumulating forward travel.
+        is_stopped = mode in ("STANDSTILL", "PHONE_HANDLED")
 
         # 1. State prediction with Confidence-Aware dynamic alpha and Q(t)
         ekf.predict(
             dt=dt,
             v_ai=ai_speed[i],
             v_ai_std=ai_speed_std[i],
-            gyro_z=gyro_z[i],
+            gyro_z=yaw_rate[i],
             is_stationary=is_stopped,
             is_tunnel_alert=context_engine.tunnel_alert
         )

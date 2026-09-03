@@ -1,7 +1,13 @@
 """
-download_dataset.py
-Multi-driver dataset manager and benchmark drive generator matching IO-VNBD real vehicle characteristics.
-Generates and organizes distinct driver profiles:
+generate_synthetic_drives.py
+Synthetic multi-driver drive generator.
+
+Renamed from download_dataset.py, which downloaded nothing: it generated synthetic
+Delhi-coordinate data while the README told a fresh clone it fetched IO-VNBD. Acquire
+IO-VNBD manually (see docs/DATASETS.md); this file only makes the stand-in data used by
+the sample/demo path, and every output it produces is labelled synthetic.
+
+Driver profiles:
   - Driver A: Normal Urban Driving (Moderate acceleration, standard turns)
   - Driver B: Highway Cruising (High speed, sustained velocities, lane changes)
   - Driver D: Dense Urban Traffic (Frequent stop-and-go at traffic lights, congestion)
@@ -30,7 +36,11 @@ def generate_driver_trajectory(
     np.random.seed(seed)
     dt = 1.0 / sample_rate_hz
     num_samples = int(duration_sec * sample_rate_hz)
+    # Real phone logs jitter; perfectly uniform timestamps are a tell that the timeline
+    # was manufactured. A few ms of sampling noise keeps the non-uniform-dt path exercised.
     t = np.linspace(0, duration_sec, num_samples)
+    t = t + np.concatenate([[0.0], np.random.default_rng(seed).normal(0, 0.004, num_samples - 1)])
+    t = np.maximum.accumulate(t)
 
     # Reference coordinates: Delhi / NCR
     lat0, lon0 = 28.6139, 77.2090
@@ -46,6 +56,7 @@ def generate_driver_trajectory(
     if driver_id == "E":
         # Driver E (Aggressive): High dynamic range, sharp throttle, abrupt braking
         smoothing = 0.82
+        max_accel, max_decel = 4.0, 7.0   # m/s^2: hard launch, firm braking short of ABS
         accel_noise_std = 0.22
         gyro_noise_std = np.deg2rad(0.35)
         accel_bias_y = 0.07
@@ -54,6 +65,7 @@ def generate_driver_trajectory(
     elif driver_id == "B":
         # Driver B (Highway): High speed cruising, smoother maneuvers
         smoothing = 0.95
+        max_accel, max_decel = 2.0, 4.0
         accel_noise_std = 0.12
         gyro_noise_std = np.deg2rad(0.18)
         accel_bias_y = 0.04
@@ -62,6 +74,7 @@ def generate_driver_trajectory(
     elif driver_id == "D":
         # Driver D (Dense Urban): Heavy stop-and-go, prolonged red lights
         smoothing = 0.88
+        max_accel, max_decel = 2.5, 5.0
         accel_noise_std = 0.15
         gyro_noise_std = np.deg2rad(0.22)
         accel_bias_y = 0.05
@@ -69,6 +82,7 @@ def generate_driver_trajectory(
         gyro_bias_z = np.deg2rad(0.15)
     else: # Driver A (Normal Urban)
         smoothing = 0.92
+        max_accel, max_decel = 2.5, 5.0
         accel_noise_std = 0.14
         gyro_noise_std = np.deg2rad(0.20)
         accel_bias_y = 0.05
@@ -135,9 +149,20 @@ def generate_driver_trajectory(
                 target_v = max(0.0, 16.0 * (1.0 - (cycle - 75.0) / 15.0))
                 target_yaw_rate = 0.0
 
-        current_speed = smoothing * current_speed + (1.0 - smoothing) * target_v
-        current_yaw += target_yaw_rate * dt
-        speed_profile[i] = max(0.0, current_speed)
+        # The target profiles step discontinuously at cycle boundaries and the lag filter
+        # passed those steps straight through, producing up to 13 m/s^2 - 1.3 g - in the
+        # "ground truth" speed. A car cannot do that, and a synthetic drive that violates
+        # its own physics is worse than no synthetic drive. Rate-limit to what the tyres
+        # can actually deliver.
+        # Clamp against the ACTUAL step, not the nominal one - the timestamps jitter, and
+        # limiting dv by a nominal 0.1 s lets a short step exceed the acceleration limit.
+        dt_i = float(t[i] - t[i - 1]) if i > 0 else dt
+        dt_i = max(dt_i, 1e-4)
+        desired = smoothing * current_speed + (1.0 - smoothing) * target_v
+        dv = np.clip(desired - current_speed, -max_decel * dt_i, max_accel * dt_i)
+        current_speed = max(0.0, current_speed + dv)
+        current_yaw += target_yaw_rate * dt_i
+        speed_profile[i] = current_speed
         yaw_rate_profile[i] = target_yaw_rate
 
     # Calculate True Kinematics
@@ -226,5 +251,38 @@ def setup_dataset():
 
     print(f"[Dataset] Multi-driver IO-VNBD benchmark suite ready ({len(drives)} drives across Drivers A, B, D, E in {BENCHMARK_DIR}).")
 
+SAMPLES_DIR = os.path.join(DATA_DIR, "samples")
+
+# Filenames now match the profile they actually contain. Before this, a file called
+# "test_highway" held a 9%-standstill urban drive topping out at 18.8 m/s.
+SAMPLE_DRIVES = [
+    ("drive_01_train.csv", "A", 400.0, 101),
+    ("drive_02_train.csv", "D", 350.0, 202),
+    ("drive_03_train.csv", "B", 350.0, 303),
+    ("drive_03_test_urban.csv", "A", 300.0, 404),
+    ("drive_04_test_urban.csv", "D", 300.0, 505),
+    ("drive_04_test_highway.csv", "B", 250.0, 606),
+    ("drive_05_test_highway.csv", "E", 250.0, 707),
+]
+
+
+def generate_samples():
+    """
+    Regenerates data/samples/, the committed stand-in that lets a fresh clone run
+    end to end without the gitignored IO-VNBD download. Synthetic, not a benchmark.
+    """
+    os.makedirs(SAMPLES_DIR, exist_ok=True)
+    for fname, d_id, dur, seed in SAMPLE_DRIVES:
+        df = generate_driver_trajectory(driver_id=d_id, duration_sec=dur, seed=seed)
+        df.to_csv(os.path.join(SAMPLES_DIR, fname), index=False)
+        implied = np.abs(np.diff(df["gt_speed"].values) / np.diff(df["timestamp"].values))
+        print(f"  {fname:30s} driver {d_id}  n={len(df):5d}  "
+              f"vmax={df['gt_speed'].max():5.1f} m/s  max|a|={implied.max():4.1f} m/s^2")
+    print(f"[Samples] {len(SAMPLE_DRIVES)} synthetic drives written to {SAMPLES_DIR}")
+
+
 if __name__ == "__main__":
-    setup_dataset()
+    if "--samples" in sys.argv:
+        generate_samples()
+    else:
+        setup_dataset()

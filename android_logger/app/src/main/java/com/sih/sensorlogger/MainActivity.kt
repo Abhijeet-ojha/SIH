@@ -34,6 +34,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
     private lateinit var sensorManager: SensorManager
     private var accelSensor: Sensor? = null
     private var gyroSensor: Sensor? = null
+    // The engine took an ambientLux argument and was fed a constant, while the barometer,
+    // magnetometer and step detector - all present on any modern phone, all free from the
+    // sensor hub - were never registered at all.
+    private var gravitySensor: Sensor? = null
+    private var linAccelSensor: Sensor? = null
+    private var magSensor: Sensor? = null
+    private var pressureSensor: Sensor? = null
+    private var lightSensor: Sensor? = null
+    private var stepSensor: Sensor? = null
+    private var rotationSensor: Sensor? = null
     private lateinit var locationManager: LocationManager
 
     private var isLogging = false
@@ -43,6 +53,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
     // Latest sensor cache
     private var ax = 0f; private var ay = 0f; private var az = 0f
     private var gx = 0f; private var gy = 0f; private var gz = 0f
+    private var grx = 0f; private var gry = 0f; private var grz = 9.80665f
+    private var lax = 0f; private var lay = 0f; private var laz = 0f
+    private var mx = Float.NaN; private var my = Float.NaN; private var mz = Float.NaN
+    private var pressure = Float.NaN
+    private var light = Float.NaN
+    private var stepEvent = 0
     private var gpsLat = 0.0; private var gpsLon = 0.0
     private var gpsSpeed = 0f; private var gpsHeading = 0f
 
@@ -60,6 +76,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        gravitySensor = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        linAccelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+        magSensor = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
+        pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
+        lightSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT)
+        stepSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+        rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
         checkPermissions()
@@ -77,7 +100,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         val permissions = arrayOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.HIGH_SAMPLING_RATE_SENSORS
+            Manifest.permission.HIGH_SAMPLING_RATE_SENSORS,
+            Manifest.permission.ACTIVITY_RECOGNITION
         )
         ActivityCompat.requestPermissions(this, permissions, 100)
     }
@@ -90,12 +114,27 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
             logWriter = PrintWriter(FileWriter(currentFile!!, true))
 
             // CSV Header matching data_loader.py
-            logWriter?.println("timestamp,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z,gps_lat,gps_lon,gps_speed,gps_heading")
+            logWriter?.println(
+                "timestamp,acc_x,acc_y,acc_z,gyro_x,gyro_y,gyro_z," +
+                "grav_x,grav_y,grav_z,lin_x,lin_y,lin_z," +
+                "mag_x,mag_y,mag_z,pressure,light,step_detector," +
+                "gps_lat,gps_lon,gps_speed,gps_heading"
+            )
             logWriter?.flush()
 
             // Register sensors at 20-50 Hz (SENSOR_DELAY_GAME)
             accelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
             gyroSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            gravitySensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            linAccelSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            magSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            rotationSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+            // Barometer and light change slowly; polling them at game rate wastes battery
+            // for no extra information.
+            pressureSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+            lightSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+            // Step detector fires per step; there is no rate to choose.
+            stepSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
 
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                 locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100L, 0f, this)
@@ -130,17 +169,33 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
 
         val nowSec = System.currentTimeMillis() / 1000.0
 
-        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-            ax = event.values[0]; ay = event.values[1]; az = event.values[2]
-        } else if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
+        when (event.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER -> { ax = event.values[0]; ay = event.values[1]; az = event.values[2] }
+            Sensor.TYPE_GRAVITY -> { grx = event.values[0]; gry = event.values[1]; grz = event.values[2] }
+            Sensor.TYPE_LINEAR_ACCELERATION -> { lax = event.values[0]; lay = event.values[1]; laz = event.values[2] }
+            Sensor.TYPE_MAGNETIC_FIELD -> { mx = event.values[0]; my = event.values[1]; mz = event.values[2] }
+            Sensor.TYPE_PRESSURE -> pressure = event.values[0]
+            Sensor.TYPE_LIGHT -> light = event.values[0]
+            Sensor.TYPE_STEP_DETECTOR -> stepEvent = 1
+        }
+
+        if (event.sensor.type == Sensor.TYPE_GYROSCOPE) {
             gx = event.values[0]; gy = event.values[1]; gz = event.values[2]
             
             // Log sample on gyro arrival
             logWriter?.printf(
                 Locale.US,
-                "%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.2f,%.2f\n",
-                nowSec, ax, ay, az, gx, gy, gz, gpsLat, gpsLon, gpsSpeed, gpsHeading
+                "%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f," +
+                "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f," +
+                "%.3f,%.3f,%.3f,%.3f,%.2f,%d," +
+                "%.6f,%.6f,%.2f,%.2f\n",
+                nowSec, ax, ay, az, gx, gy, gz,
+                grx, gry, grz, lax, lay, laz,
+                mx, my, mz, pressure, light, stepEvent,
+                gpsLat, gpsLon, gpsSpeed, gpsHeading
             )
+            // One step event per row, not one sticky flag until the next step.
+            stepEvent = 0
             sampleCount++
             if (sampleCount % 50 == 0) {
                 logWriter?.flush()

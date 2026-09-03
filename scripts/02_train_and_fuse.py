@@ -53,9 +53,15 @@ def main():
 
     model_save_path = os.path.join(PROJECT_ROOT, "outputs", "models", "speed_regressor.joblib")
     model.save(model_save_path)
-    embedded_rules_path = os.path.join(PROJECT_ROOT, "outputs", "models", "embedded_rules.json")
-    model.export_embedded_rules(embedded_rules_path)
     print(f"         Saved trained model to {model_save_path}")
+    # export_embedded_rules() was called here but never existed on SpeedRegressorModel, so
+    # this script had been crashing at this line; outputs/models/embedded_rules.json is a
+    # stale artefact holding feature names and no weights, which is why the Android engine
+    # ended up with two hardcoded constants instead of a model.
+    # The real deployable export is scripts/export_ondevice_model.py - it trains on the
+    # compact 16-feature set the phone can actually recompute, writes the tree ensemble as
+    # JSON, and emits golden vectors for the parity test.
+    print("         On-device export: run scripts/export_ondevice_model.py")
 
     # Evaluate on Unseen Test Drive (Driver E - Aggressive)
     test_drive = [d for d in test_drives if d.driver_id == "E"][0] if any(d.driver_id == "E" for d in test_drives) else test_drives[0]

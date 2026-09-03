@@ -7,7 +7,13 @@ Supports:
   - XGBoost Regressor (Gradient Boosted Trees)
   - 1D-CNN / Temporal Convolutional Network (PyTorch Lightweight Neural Architecture)
   - Split Conformal Prediction for distribution-free calibrated prediction intervals
+
+XGBoost and PyTorch are optional. Annotations are deferred (PEP 563) so that
+`forward(self, x: torch.Tensor)` does not evaluate torch.Tensor at class-definition time
+when torch is absent - otherwise merely importing this module crashes a fresh clone that
+only wants the RandomForest path.
 """
+from __future__ import annotations
 
 import os
 import io
@@ -21,10 +27,32 @@ from scipy.interpolate import interp1d
 
 from sklearn.ensemble import RandomForestRegressor, HistGradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import xgboost as xgb
-import torch
-import torch.nn as nn
-import torch.optim as optim
+# Optional backends. The module supports RandomForest / HistGradientBoosting without
+# either of these, and a hard import made a fresh clone crash on `import speed_model`
+# before it could run anything at all.
+try:
+    import xgboost as xgb
+    HAS_XGBOOST = True
+except ImportError:
+    xgb = None
+    HAS_XGBOOST = False
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+    HAS_TORCH = True
+except ImportError:
+    import types
+    torch = optim = None
+    HAS_TORCH = False
+    # Conv1DSpeedNet subclasses nn.Module at import time, so the stub has to supply a real
+    # base class. Training raises instead - see _train_torch.
+    nn = types.SimpleNamespace(Module=object)
+
+TORCH_MISSING_MSG = (
+    "model_type='cnn' requires PyTorch; pip install torch, or use 'rf' / 'hgb'."
+)
 
 # ── 1. Lightweight 1D-CNN Architecture (PyTorch) ─────────────────────────────
 class Conv1DSpeedNet(nn.Module):
@@ -93,6 +121,11 @@ class SpeedRegressorModel:
             self.q_lower_model = HistGradientBoostingRegressor(loss="quantile", quantile=0.05, max_iter=100, max_depth=max_depth, random_state=random_state)
             self.q_upper_model = HistGradientBoostingRegressor(loss="quantile", quantile=0.95, max_iter=100, max_depth=max_depth, random_state=random_state)
         elif self.model_type in ["xgboost", "xgb"]:
+            if not HAS_XGBOOST:
+                raise ImportError(
+                    "model_type='xgboost' requires xgboost; pip install xgboost, "
+                    "or use 'rf' / 'hgb'."
+                )
             self.model = xgb.XGBRegressor(
                 n_estimators=n_estimators, max_depth=min(max_depth, 8),
                 learning_rate=0.08, random_state=random_state, n_jobs=-1
@@ -113,6 +146,8 @@ class SpeedRegressorModel:
         n_feats = X.shape[1]
 
         if self.model_type in ["1d_cnn", "cnn", "tcn"]:
+            if not HAS_TORCH:
+                raise ImportError(TORCH_MISSING_MSG)
             self.model = Conv1DSpeedNet(in_features=n_feats)
             self._train_torch(X.values, y, epochs=40, batch_size=64)
         elif self.model_type in ["hist_gb", "histgb"]:
@@ -215,6 +250,25 @@ class SpeedRegressorModel:
             "mean_uncertainty_sigma": float(np.mean(y_std))
         }
         return y_pred, y_std, metrics
+
+    def get_feature_importances(self, top_n: int = 10) -> List[Tuple[str, float]]:
+        """
+        Top-n (feature, importance) pairs, descending.
+
+        Called by scripts/02_train_and_fuse.py, which had been crashing here because the
+        method did not exist. Worth having rather than deleting the call: with the feature
+        set now frame-invariant, the ranking is the quickest check that the model is
+        keyed on motion rather than on how the phone happens to be mounted.
+
+        Returns [] for models without a native importance measure (the CNN).
+        """
+        importances = getattr(self.model, "feature_importances_", None)
+        if importances is None:
+            return []
+        names = self.feature_names or [f"f{i}" for i in range(len(importances))]
+        pairs = sorted(zip(names, (float(v) for v in importances)),
+                       key=lambda kv: kv[1], reverse=True)
+        return pairs[:top_n]
 
     def get_model_size_kb(self) -> float:
         """Computes serialized model size in Kilobytes."""

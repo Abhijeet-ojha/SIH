@@ -12,6 +12,11 @@ import pandas as pd
 from typing import Tuple, List, Dict, Optional
 from scipy import stats
 
+try:
+    from .frame_alignment import align_frame
+except ImportError:  # direct script execution
+    from frame_alignment import align_frame
+
 def extract_causal_window_features(
     df: pd.DataFrame,
     window_sec: float = 1.5,
@@ -29,44 +34,55 @@ def extract_causal_window_features(
     """
     t_start_bench = time.perf_counter()
 
+    # Sample rate is a property of the drive, not a constant. The loader now preserves
+    # real timestamps, so read it from the data instead of asserting 10 Hz.
+    if "dt" in df.columns:
+        med_dt = float(np.median(df["dt"].values[df["dt"].values > 0]))
+        if med_dt > 0:
+            sample_rate = 1.0 / med_dt
+
     window_size = max(4, int(round(window_sec * sample_rate)))
     step_size = max(1, int(round(step_sec * sample_rate)))
 
     t = df["timestamp"].values
-    ax = df["acc_x"].values.astype(float)
-    ay = df["acc_y"].values.astype(float)
-    az = df["acc_z"].values.astype(float)
-    gx = df["gyro_x"].values.astype(float)
-    gy = df["gyro_y"].values.astype(float)
-    gz = df["gyro_z"].values.astype(float)
-
     n = len(df)
     dt_scalar = 1.0 / sample_rate
+    dt_arr = df["dt"].values if "dt" in df.columns else np.full(n, dt_scalar)
 
-    # Kinematic Magnitudes (Orientation-invariant)
-    acc_mag = np.sqrt(ax**2 + ay**2 + az**2)
-    gyro_mag = np.sqrt(gx**2 + gy**2 + gz**2)
-    acc_horiz = np.sqrt(ax**2 + ay**2)
+    # ── Frame-invariant channels ──────────────────────────────────────────────
+    # Raw ax/ay/az/gx/gy/gz are deliberately NOT features any more. They encode how the
+    # phone happens to be sitting, so a model trained on them learns one mounting and
+    # fails on the next - which is exactly what the LODRO negative R2 was reporting.
+    # Everything below is unchanged by an arbitrary fixed rotation of the phone; see
+    # tests/test_frame_invariance.py.
+    acc = np.column_stack([df["acc_x"].values, df["acc_y"].values, df["acc_z"].values]).astype(float)
+    gyro = np.column_stack([df["gyro_x"].values, df["gyro_y"].values, df["gyro_z"].values]).astype(float)
+    speed_for_axis = df["speed"].values if "speed" in df.columns else None
+    fr = align_frame(acc, gyro, dt_arr, speed=speed_for_axis)
 
-    # Temporal Jerk (da/dt) and Angular Acceleration (domega/dt)
-    jx = np.gradient(ax, dt_scalar)
-    jy = np.gradient(ay, dt_scalar)
-    jz = np.gradient(az, dt_scalar)
-    jerk_mag = np.sqrt(jx**2 + jy**2 + jz**2)
-    alpha_x = np.gradient(gx, dt_scalar)
-    alpha_y = np.gradient(gy, dt_scalar)
-    alpha_z = np.gradient(gz, dt_scalar)
-    alpha_mag = np.sqrt(alpha_x**2 + alpha_y**2 + alpha_z**2)
+    a_fwd = fr["a_fwd"]
+    a_lat = fr["a_lat"]
+    a_vert = fr["a_vert"]
+    a_horiz_mag = fr["a_horiz_mag"]
+    yaw_rate = fr["yaw_rate"]
+    gyro_mag = fr["gyro_mag"]
+    tilt_rate = fr["tilt_rate"]
+    grav_stab = fr["grav_stability"]
+
+    # Temporal Jerk (da/dt) and Angular Acceleration (domega/dt), on invariant channels.
+    jerk_fwd = np.gradient(a_fwd, dt_scalar)
+    jerk_vert = np.gradient(a_vert, dt_scalar)
+    alpha_yaw = np.gradient(yaw_rate, dt_scalar)
 
     has_speed = "speed" in df.columns
     speed_arr = df["speed"].values if has_speed else np.zeros(n)
 
     # Dictionary of all processed signals (NO target or spatial labels)
     signals = {
-        "ax": ax, "ay": ay, "az": az,
-        "gx": gx, "gy": gy, "gz": gz,
-        "acc_mag": acc_mag, "gyro_mag": gyro_mag, "acc_horiz": acc_horiz,
-        "jerk_mag": jerk_mag, "alpha_mag": alpha_mag, "alpha_z": alpha_z
+        "a_fwd": a_fwd, "a_lat": a_lat, "a_vert": a_vert, "a_horiz_mag": a_horiz_mag,
+        "yaw_rate": yaw_rate, "gyro_mag": gyro_mag, "tilt_rate": tilt_rate,
+        "grav_stab": grav_stab,
+        "jerk_fwd": jerk_fwd, "jerk_vert": jerk_vert, "alpha_yaw": alpha_yaw,
     }
 
     feature_rows = []
@@ -150,10 +166,20 @@ def extract_causal_window_features(
                 row[f"{sig_name}_power_low"] = p_low
                 row[f"{sig_name}_power_high"] = p_high
 
-        # Physical Interaction & Vibration Features (NO label leakage)
-        row["vibration_power"] = row["acc_mag_std"] * row["acc_horiz_rms"]
-        row["jerk_motion_intensity"] = row["jerk_mag_rms"] * (row["gyro_mag_mean"] + 0.01)
-        row["curv_ratio"] = float(abs(row["ax_mean"]) / (abs(row["gz_mean"]) + 0.05))
+        # Physical Interaction Features.
+        # The old vibration_power = acc_mag_std * acc_horiz_rms was the shortcut the model
+        # actually learned: pure vibration energy, which correlates with speed only because
+        # the training phone was bolted into one car. It is gone. Road-induced *vertical*
+        # vibration genuinely does scale with speed, so that is kept - but it is now safe
+        # to use because motion_gate.MotionGate vetoes the whole estimate when the phone is
+        # being handled, which is the negative case the training set never contained.
+        row["road_vibration"] = row["a_vert_std"] * row["a_horiz_mag_rms"]
+        # Turn tightness: lateral acceleration against yaw rate. For a vehicle these obey
+        # a_lat ~= v * omega, so their ratio is an orientation-free speed proxy that
+        # vibration cannot fake.
+        row["turn_speed_proxy"] = float(abs(row["a_lat_mean"]) / (abs(row["yaw_rate_mean"]) + 0.05))
+        # How trustworthy the frame is right now. Near zero for a cradled phone.
+        row["frame_instability"] = row["grav_stab_mean"] * (row["tilt_rate_rms"] + 0.01)
 
         feature_rows.append(row)
 

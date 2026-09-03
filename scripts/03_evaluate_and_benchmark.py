@@ -94,7 +94,7 @@ def main():
         )
         all_metrics[drive_name] = m
 
-        print(f"    - Naive Drift:       {m['naive_dead_reckoning']['final_drift_m']:.1f} m ({m['naive_dead_reckoning']['drift_pct_distance']}%)")
+        print(f"    - Naive Drift:       {m['naive_dead_reckoning']['final_drift_m']:.1f} m ({m['naive_dead_reckoning']['drift_pct_distance_CLOSED_LOOP']}%)")
         print(f"    - 90s Blackout Exit: {m['ai_dr_gnss_ekf_fusion']['blackout_terminal_exit_error_m']:.2f} m (Peak: {m['ai_dr_gnss_ekf_fusion']['blackout_max_error_m']:.2f} m)")
         print(f"    - Post-GPS Settled:  {m['ai_dr_gnss_ekf_fusion']['post_reacquisition_settled_error_m']:.2f} m")
 

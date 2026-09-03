@@ -3,33 +3,35 @@
 
 ---
 
-### 1. Statistical Summary Across Drives (Mean ± Std, N=6)
+### 1. Statistical Summary Across Drives (Mean ± Std, N=4)
+
+**Primary metric — open-loop blackout drift = exit error / distance travelled with GPS off.**
+Target is 10%. 0 of 4 drives meet it.
 
 | Metric | Naive Dead Reckoning (Baseline) | AI-DR Pure (ML Speed) | AI-DR + EKF GNSS Fusion (Final) |
 | :--- | :--- | :--- | :--- |
-| **Drift as % Distance** | **363.67% ± 557.06%** | 48.52% ± 22.7% | **< 0.05%** |
-| **90s Blackout Peak Drift** | **2285.58 m ± 2009.71 m** | 631.46 m ± 366.63 m | **425.36 m ± 325.07 m** |
-| **90s Blackout Terminal Exit Error** | **2285.58 m ± 2009.71 m** | 631.46 m ± 366.63 m | **412.96 m ± 316.29 m** |
-| **Post-Reacquisition Settled Error** | N/A (Diverges indefinitely) | N/A (Diverges linearly) | **20.54 m ± 16.8 m** |
-| **Trajectory RMSE** | 800+ meters | 40–55 meters | **132.51 m ± 97.97 m** |
+| **Blackout drift % (PRIMARY)** | **46.34% ± 39.44%** | 116.26% ± 78.15% | **79.43% ± 43.39%** |
+| Closed-loop drift % (GPS restored — *not* a DR number) | 40.45% ± 28.3% | 75.52% ± 55.64% | 2.22 m final error |
+| **90s Blackout Peak Drift** | **530.19 m ± 419.74 m** | 1030.88 m ± 308.97 m | **703.42 m ± 82.37 m** |
+| **90s Blackout Terminal Exit Error** | **530.19 m ± 419.74 m** | 1030.88 m ± 308.97 m | **703.42 m ± 82.37 m** |
+| **Post-Reacquisition Settled Error** | N/A (no GNSS update to settle to) | N/A (no GNSS update to settle to) | **1.34 m ± 0.91 m** |
+| **Trajectory RMSE** | 640.42 m ± 470.81 m | 1190.1 m ± 324.36 m | **219.58 m ± 38.97 m** |
 
 ---
 
 ### 2. Breakdown by Driver Profile
 
-| Drive Profile | Driver ID | Distance (m) | Naive Drift % | 90s Blackout Exit Error (m) | Fused Peak Blackout Drift (m) | Post-GPS Settled Error (m) |
+| Drive Profile | Driver ID | Blackout dist (m) | **Fused blackout drift %** | Naive blackout drift % | Exit error (m) | Post-GPS Settled Error (m) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Driver A (Normal)** | `A` | 2890.03 m | 10.55% | **528.98 m** | 543.01 m | **10.29 m** |
-| **Driver A (Normal)** | `A` | 1432.68 m | 67.07% | **206.6 m** | 209.99 m | **25.31 m** |
-| **Driver B (Highway)** | `B` | 1221.2 m | 1583.53% | **41.35 m** | 50.38 m | **7.02 m** |
-| **Driver D (Urban)** | `D` | 3062.69 m | 23.33% | **538.26 m** | 547.07 m | **54.28 m** |
-| **Driver E (Aggressive)** | `E` | 4216.41 m | 151.54% | **989.79 m** | 1023.22 m | **4.94 m** |
-| **Driver E (Aggressive)** | `E` | 1254.51 m | 346.01% | **172.81 m** | 178.49 m | **21.41 m** |
+| **Driver A (Normal)** | `A` | 960.19 m | **66.35%** | 112.86% | 637.11 m | 0.73 m |
+| **Driver A (Normal)** | `A` | 2046.73 m | **35.02%** | 38.58% | 716.87 m | 0.94 m |
+| **Driver A (Normal)** | `A` | 550.1 m | **151.38%** | 19.22% | 832.72 m | 0.78 m |
+| **Driver A (Normal)** | `A` | 965.14 m | **64.96%** | 14.68% | 626.99 m | 2.91 m |
 
 ---
 
 ### 3. Key Observations for ISRO / SIH Jury
 
-1. **Defensible Blackout Timing**: The headline **90-second Blackout Terminal Exit Error is 412.96m ± 316.29m**, measured strictly in the open-loop state prior to the arrival of the first post-outage satellite measurement.
-2. **Immediate Post-Reacquisition Convergence**: Within 5 seconds of GNSS recovery, the filter re-converges to **20.54m ± 16.8m**, with zero discontinuous trajectory teleportation.
-3. **Hardest Case (Driver E - Aggressive)**: Even under hard braking and sharp turns where naive integration accumulates up to **6389.5m** of drift, our AI-speed + EKF Fusion reduces blackout exit error to a range of **172.8m – 989.8m** depending on drive length and manoeuvre profile.
+1. **Defensible Blackout Timing**: The headline **90-second Blackout Terminal Exit Error is 703.42m ± 82.37m**, measured strictly in the open-loop state prior to the arrival of the first post-outage satellite measurement.
+2. **Immediate Post-Reacquisition Convergence**: Within 5 seconds of GNSS recovery, the filter re-converges to **1.34m ± 0.91m**, with zero discontinuous trajectory teleportation.
+3. **Driver E Data**: No Driver E drives in benchmark set.
