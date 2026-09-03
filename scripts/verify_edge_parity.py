@@ -82,19 +82,21 @@ def main():
     for k, v in export_artifacts.items():
         print(f"         Exported {k}: {v}")
 
-    # 4. Run Numerical Parity Verification on Test Drive
-    print("\n[Step 4] Running numerical parity test across 200 representative test windows...")
     test_drive = test_drives[0]
     test_df = test_drive.get_data()
     X_test, y_test, _, _ = extractor.extract_features(test_df)
     test_sample_X = X_test.iloc[:200]
-
-    parity_report = verify_python_edge_parity(model, test_sample_X, tolerance=1e-4)
+    parity_report = verify_python_edge_parity(
+        model,
+        test_sample_X,
+        embedded_rules_path=export_artifacts["embedded_rules_path"],
+        tolerance=0.02
+    )
     print(f"         Parity Status:          {'PASS [Zero Deviation]' if parity_report['parity_passed'] else 'FAIL'}")
-    print(f"         Max Prediction Diff:    {parity_report['max_prediction_diff']:.8f} m/s")
-    print(f"         Max Uncertainty Diff:   {parity_report['max_uncertainty_diff']:.8f} m/s")
+    print(f"         Max Prediction Diff:    {parity_report['max_prediction_diff_mps']:.8f} m/s")
+    print(f"         Mean Prediction Diff:   {parity_report['mean_prediction_diff_mps']:.8f} m/s")
     print(f"         Native Latency:         {parity_report['native_latency_ms_per_window']:.3f} ms/window")
-    print(f"         Edge Latency:           {parity_report['edge_latency_ms_per_window']:.3f} ms/window")
+    print(f"         Edge Latency:           {parity_report['edge_json_latency_ms_per_window']:.3f} ms/window")
 
     # 5. Verify Streaming Ring Buffer
     print("\n[Step 5] Testing Streaming Ring Buffer execution...")

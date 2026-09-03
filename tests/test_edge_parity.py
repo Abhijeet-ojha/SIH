@@ -34,7 +34,7 @@ class TestEdgeParity(unittest.TestCase):
 
         parity_report = verify_python_edge_parity(model, test_X, tolerance=1e-4)
         self.assertTrue(parity_report["parity_passed"])
-        self.assertLessEqual(parity_report["max_prediction_diff"], 1e-4)
+        self.assertLessEqual(parity_report["max_prediction_diff_mps"], 1e-4)
 
 
 if __name__ == "__main__":

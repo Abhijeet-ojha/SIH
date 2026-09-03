@@ -28,7 +28,7 @@ import kotlin.math.*
 /**
  * SIH PS 168: Real-Time Smartphone Hardware Sensor Engine & WebSocket Telemetry Gateway.
  * Captures 50 Hz Accelerometer, Gyroscope, Hardware Fused Compass, and GPS/Network Location
- * with Drive/Walk Motion Simulator, on-device ML inference, and live laptop streaming.
+ * with Live Frequency Diagnostics (Hz), Drive/Walk Motion Simulator, and on-device ML inference.
  */
 class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener {
 
@@ -57,6 +57,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
     private var originLat = 12.9716; private var originLon = 77.5946
     private val rEarth = 6378137.0
 
+    // Real-Time Measured Sampling Frequencies (Hz) & Sample Counters
+    private var accelCount = 0; private var gyroCount = 0
+    private var rotCount = 0; private var gnssCount = 0
+    private var mlCount = 0; private var packetCount = 0
+
+    private var measuredAccelHz = 0.0
+    private var measuredGyroHz = 0.0
+    private var measuredRotHz = 0.0
+    private var measuredGnssHz = 0.0
+    private var measuredMlHz = 0.0
+
+    private var lastRateCalcTimeMs = System.currentTimeMillis()
+
     // Dead Reckoning Position in Local Tangent Plane (ENU)
     private var estPosEast = 0.0
     private var estPosNorth = 0.0
@@ -77,6 +90,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
 
     private val handler = Handler(Looper.getMainLooper())
     private var streamRunnable: Runnable? = null
+    private var rateCalcRunnable: Runnable? = null
 
     // UI Elements
     private lateinit var statusText: TextView
@@ -114,6 +128,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
 
         checkPermissions()
         startLiveSensors()
+        startRateCalculator()
 
         logButton.setOnClickListener {
             if (isStreaming) {
@@ -165,7 +180,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         )
         ActivityCompat.requestPermissions(this, permissions, 100)
 
-        // Fetch immediate location
         try {
             if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
                 ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
@@ -178,7 +192,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
                     originLat = it.latitude
                     originLon = it.longitude
                     hasGpsFix = true
-                    txtLocation.text = String.format(Locale.US, "Location: %.6f°, %.6f° (Fix Ready)", it.latitude, it.longitude)
                 }
             }
         } catch (_: Exception) {}
@@ -198,6 +211,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         } catch (_: Exception) {}
     }
 
+    private fun startRateCalculator() {
+        lastRateCalcTimeMs = System.currentTimeMillis()
+        rateCalcRunnable = object : Runnable {
+            override fun run() {
+                val now = System.currentTimeMillis()
+                val dtS = max(0.1, (now - lastRateCalcTimeMs) / 1000.0)
+                lastRateCalcTimeMs = now
+
+                measuredAccelHz = accelCount / dtS
+                measuredGyroHz = gyroCount / dtS
+                measuredRotHz = rotCount / dtS
+                measuredGnssHz = gnssCount / dtS
+                measuredMlHz = mlCount / dtS
+
+                accelCount = 0
+                gyroCount = 0
+                rotCount = 0
+                gnssCount = 0
+                mlCount = 0
+
+                handler.postDelayed(this, 1000)
+            }
+        }
+        rateCalcRunnable?.let { handler.post(it) }
+    }
+
     private fun startStreaming() {
         val laptopIp = ipInput.text.toString().trim()
         if (laptopIp.isEmpty()) {
@@ -214,7 +253,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
                 runOnUiThread {
                     isStreaming = true
                     logButton.text = "🛑 STOP STREAMING"
-                    statusText.text = "🟢 STREAMING LIVE (50 Hz Sensors -> $laptopIp:8765)"
+                    statusText.text = "🟢 STREAMING LIVE (${String.format(Locale.US, "%.1f", measuredAccelHz)} Hz -> $laptopIp:8765)"
                     Toast.makeText(this@MainActivity, "Connected to Laptop Gateway!", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -226,7 +265,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
             }
         })
 
-        // High-rate 20 Hz Telemetry Transmission Loop (every 50ms)
         lastTimestampMs = System.currentTimeMillis()
         streamRunnable = object : Runnable {
             override fun run() {
@@ -251,6 +289,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         val nowMs = System.currentTimeMillis()
         val dt = max(0.01, (nowMs - lastTimestampMs) / 1000.0)
         lastTimestampMs = nowMs
+        packetCount++
+        mlCount++
 
         if (isBlackout) {
             blackoutElapsedS += dt
@@ -267,7 +307,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         } else if (inferenceEngine.stateSpeed > 0.1) {
             estSpeedMps = inferenceEngine.stateSpeed
         } else {
-            // Smooth friction decay when stationary
             estSpeedMps = max(0.0, estSpeedMps - 0.5 * dt)
         }
 
@@ -279,10 +318,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         val curLon = originLon + (estPosEast / (rEarth * cos(originLat * Math.PI / 180.0))) * (180.0 / Math.PI)
         val speedKmh = estSpeedMps * 3.6
 
-        // Update on-screen UI HUD
-        txtSpeed.text = String.format(Locale.US, "Speed: %.1f km/h (%.2f m/s)", speedKmh, estSpeedMps)
-        txtHeading.text = String.format(Locale.US, "Compass Heading: %.1f°", activeHeadingDeg)
-        txtLocation.text = String.format(Locale.US, "Location: %.6f°, %.6f° (%s)", curLat, curLon, if (isBlackout) "AI-DR Blackout" else "Live Fusion")
+        // Update on-screen UI HUD with exact measured frequencies
+        txtSpeed.text = String.format(Locale.US, "Speed: %.1f km/h (%.2f m/s) • ML: %.1f Hz", speedKmh, estSpeedMps, measuredMlHz)
+        txtHeading.text = String.format(Locale.US, "Compass: %.1f° (%.1f Hz • Rotation Vector)", activeHeadingDeg, measuredRotHz)
+        txtLocation.text = String.format(Locale.US, "Location: %.6f°, %.6f° (GNSS: %.1f Hz)", curLat, curLon, measuredGnssHz)
 
         val navJson = JSONObject().apply {
             put("timestamp_s", nowMs / 1000.0)
@@ -319,10 +358,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
         event ?: return
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> {
+                accelCount++
                 ax = event.values[0]
                 ay = event.values[1]
                 az = event.values[2]
-                txtAccel.text = String.format(Locale.US, "Accel (X, Y, Z): %.1f, %.1f, %.1f m/s²", ax, ay, az)
+                txtAccel.text = String.format(Locale.US, "Accel: [%.1f, %.1f, %.1f] m/s² (%.1f Hz)", ax, ay, az, measuredAccelHz)
 
                 // Pass 50 Hz sample into On-Device ML Inference Engine
                 inferenceEngine.pushSample(
@@ -331,27 +371,26 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
                     ambientLux = 400.0, dt = 0.02
                 )
 
-                // Dynamic shake motion detection when indoors
                 val dynamicAcc = sqrt(ax * ax + ay * ay)
                 if (!isDriving && dynamicAcc > 1.5f) {
                     estSpeedMps = min(5.0, estSpeedMps + (dynamicAcc * 0.12).toDouble())
                 }
             }
             Sensor.TYPE_GYROSCOPE -> {
+                gyroCount++
                 gx = event.values[0]
                 gy = event.values[1]
                 gz = event.values[2]
-                txtGyro.text = String.format(Locale.US, "Gyro (X, Y, Z): %.2f, %.2f, %.2f rad/s", gx, gy, gz)
+                txtGyro.text = String.format(Locale.US, "Gyro: [%.2f, %.2f, %.2f] rad/s (%.1f Hz)", gx, gy, gz, measuredGyroHz)
             }
             Sensor.TYPE_ROTATION_VECTOR, Sensor.TYPE_GAME_ROTATION_VECTOR -> {
-                // Hardware-fused quaternion to azimuth (Heading / Compass)
+                rotCount++
                 SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
                 SensorManager.getOrientation(rotationMatrix, orientationAngles)
                 val azimuthRad = orientationAngles[0]
                 var azimuthDeg = Math.toDegrees(azimuthRad.toDouble())
                 if (azimuthDeg < 0) azimuthDeg += 360.0
                 compassHeadingDeg = azimuthDeg
-                txtHeading.text = String.format(Locale.US, "Compass Heading: %.1f°", compassHeadingDeg)
             }
         }
     }
@@ -359,6 +398,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onLocationChanged(location: Location) {
+        gnssCount++
         gpsLat = location.latitude
         gpsLon = location.longitude
         gpsSpeed = if (location.hasSpeed()) location.speed else 0f
@@ -374,6 +414,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener, LocationListener 
     override fun onDestroy() {
         super.onDestroy()
         stopStreaming()
+        rateCalcRunnable?.let { handler.removeCallbacks(it) }
         sensorManager.unregisterListener(this)
         locationManager.removeUpdates(this)
     }

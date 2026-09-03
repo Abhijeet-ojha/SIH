@@ -9,6 +9,30 @@ rootProject.buildDir = "../build"
 subprojects {
     project.buildDir = "${rootProject.buildDir}/${project.name}"
 }
+
+subprojects { project ->
+    if (project.name != "app") {
+        project.plugins.withId("com.android.library") {
+            project.extensions.configure("android") { ext ->
+                try {
+                    ext.extensions.add("flutter", [
+                        compileSdkVersion: 34,
+                        minSdkVersion: 21,
+                        targetSdkVersion: 34,
+                        ndkVersion: "25.1.8937393"
+                    ])
+                } catch (Exception ignored) {}
+                ext.compileSdkVersion 34
+                ext.buildToolsVersion "34.0.0"
+                ext.defaultConfig {
+                    minSdkVersion 21
+                    targetSdkVersion 34
+                }
+            }
+        }
+    }
+}
+
 subprojects {
     project.evaluationDependsOn(":app")
 }

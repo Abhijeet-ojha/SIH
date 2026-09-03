@@ -1,13 +1,11 @@
 """
 core/features/extractor.py
 Strictly Causal Sliding-Window Feature and Temporal Sequence Extraction Engine.
-Extracts:
-  - Tabular statistical moments (mean, std, min, max, median, IQR, MAD, skewness, kurtosis, zero-crossings)
-  - Kinematic jerk (da/dt) and angular acceleration (domega/dt)
-  - Orientation-invariant norms (acc_mag, gyro_mag, horizontal acc)
-  - Physical interaction features (vibration power, jerk motion intensity, curvature ratio)
-  - Data-driven spectral features (spectral centroid, dominant frequency, sub-band powers)
-  - Raw temporal tensor sequences [T x C] for deep 1D-CNN / TCN sequence modeling
+Strict Causality Contract:
+  - Trailing window layout: [t - W, t] -> Prediction at timestamp t.
+  - Strictly backward finite differences for jerk (da/dt) and angular acceleration (domega/dt).
+  - Zero np.gradient, zero centered differences, zero future samples.
+  - Zero target leakage (no speed, position, or GNSS features in feature matrix).
 """
 
 import time
@@ -18,6 +16,19 @@ from scipy import stats
 from core.features.leakage_guard import verify_feature_matrix_leakage, verify_causality
 
 
+def backward_diff(arr: np.ndarray, dt: float) -> np.ndarray:
+    """
+    Strictly causal backward finite difference:
+    (dx/dt)_t = (x[t] - x[t-1]) / dt
+    Never uses future samples.
+    """
+    res = np.zeros_like(arr, dtype=float)
+    if len(arr) > 1:
+        res[1:] = (arr[1:] - arr[:-1]) / dt
+        res[0] = 0.0
+    return res
+
+
 class CausalFeatureExtractor:
     """
     Causal Sliding-Window Feature Extractor for IMU Streams.
@@ -26,7 +37,7 @@ class CausalFeatureExtractor:
     def __init__(
         self,
         window_sec: float = 1.5,
-        step_sec: float = 0.2,
+        step_sec: float = 0.1,
         sample_rate_hz: float = 10.0,
         feature_group: str = "all"  # 'all', 'base_stats', 'dynamics', 'no_spectral', 'minimal'
     ):
@@ -64,15 +75,15 @@ class CausalFeatureExtractor:
         gyro_mag = np.sqrt(gx**2 + gy**2 + gz**2)
         acc_horiz = np.sqrt(ax**2 + ay**2)
 
-        # Jerk (da/dt) and Angular Acceleration (domega/dt)
-        jx = np.gradient(ax, dt_scalar)
-        jy = np.gradient(ay, dt_scalar)
-        jz = np.gradient(az, dt_scalar)
+        # Strictly Causal Backward Finite Differences (Zero np.gradient)
+        jx = backward_diff(ax, dt_scalar)
+        jy = backward_diff(ay, dt_scalar)
+        jz = backward_diff(az, dt_scalar)
         jerk_mag = np.sqrt(jx**2 + jy**2 + jz**2)
         
-        alpha_x = np.gradient(gx, dt_scalar)
-        alpha_y = np.gradient(gy, dt_scalar)
-        alpha_z = np.gradient(gz, dt_scalar)
+        alpha_x = backward_diff(gx, dt_scalar)
+        alpha_y = backward_diff(gy, dt_scalar)
+        alpha_z = backward_diff(gz, dt_scalar)
         alpha_mag = np.sqrt(alpha_x**2 + alpha_y**2 + alpha_z**2)
 
         has_speed = "speed" in df.columns
@@ -127,7 +138,7 @@ class CausalFeatureExtractor:
                     mad_val = float(np.median(np.abs(win - med_val)))
                     skew_val = float(stats.skew(win)) if std_val > 1e-6 else 0.0
                     kurt_val = float(stats.kurtosis(win)) if std_val > 1e-6 else 0.0
-                    zero_cross = float(np.mean(np.diff(np.sign(win - mean_val) != 0)))
+                    zero_cross = float(np.mean(np.diff(np.sign(win - mean_val) != 0))) if len(win) > 1 else 0.0
 
                     row[f"{sig_name}_median"] = med_val
                     row[f"{sig_name}_iqr"] = iqr_val
@@ -143,7 +154,7 @@ class CausalFeatureExtractor:
                     win_centered = win - mean_val
                     fft_mag = np.abs(np.fft.rfft(win_centered))
                     freqs = np.fft.rfftfreq(len(win), d=1.0/self.sample_rate)
-                    total_power = np.sum(fft_mag**2) + 1e-9
+                    total_power = float(np.sum(fft_mag**2) + 1e-9)
 
                     spec_centroid = float(np.sum(freqs * fft_mag**2) / total_power)
                     dom_freq = float(freqs[np.argmax(fft_mag)])
@@ -159,8 +170,8 @@ class CausalFeatureExtractor:
                     row[f"{sig_name}_power_high"] = p_high
 
             # Cross-Signal Interactions (No ground-truth leakage)
-            row["vibration_power"] = row["acc_mag_std"] * row["acc_horiz_rms"]
-            row["jerk_motion_intensity"] = row["jerk_mag_rms"] * (row["gyro_mag_mean"] + 0.01)
+            row["vibration_power"] = float(row["acc_mag_std"] * row["acc_horiz_rms"])
+            row["jerk_motion_intensity"] = float(row["jerk_mag_rms"] * (row["gyro_mag_mean"] + 0.01))
             row["curv_ratio"] = float(abs(row["ax_mean"]) / (abs(row["gz_mean"]) + 0.05))
 
             feature_rows.append(row)

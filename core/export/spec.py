@@ -19,8 +19,13 @@ class FeatureConfigSpec:
     step_samples: int = 2
     feature_group: str = "all"
     feature_names: List[str] = field(default_factory=list)
+    num_features: int = 0
     coordinate_convention: str = "ISO_8855_VEHICLE_BODY"
     target_unit: str = "meters_per_second"
+    raw_signals: List[str] = field(default_factory=list)
+    stat_moments: List[str] = field(default_factory=list)
+    spectral_features: List[str] = field(default_factory=list)
+    cross_interactions: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -61,5 +66,4 @@ class ModelPackageSpec:
     def load_json(cls, filepath: str) -> "ModelPackageSpec":
         with open(filepath, "r") as f:
             data = json.load(f)
-        data["feature_config"] = FeatureConfigSpec(**data["feature_config"])
         return cls(**data)

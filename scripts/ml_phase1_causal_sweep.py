@@ -149,7 +149,8 @@ def run_causal_window_sweep():
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "phase1_causal_window_sweep.csv")
     res_df.to_csv(out_path, index=False)
-    print(f"\n[PASS] Saved Causal Window Sweep results to: {out_path}")
+    res_df.to_csv(os.path.join(out_dir, "window_sweep.csv"), index=False)
+    print(f"\n[PASS] Saved Causal Window Sweep results to: {out_path} and window_sweep.csv")
     print("=" * 95)
     return res_df
 

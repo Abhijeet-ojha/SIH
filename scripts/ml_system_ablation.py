@@ -202,10 +202,12 @@ def run_system_ablation():
     out_dir = os.path.join(PROJECT_ROOT, "outputs", "metrics", "ml_experiments")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "system_ablation_scorecard.csv")
-    pd.DataFrame(ablation_summary).to_csv(out_path, index=False)
-    print(f"\n[PASS] Saved System Ablation Scorecard to: {out_path}")
+    ab_df = pd.DataFrame(ablation_summary)
+    ab_df.to_csv(out_path, index=False)
+    ab_df.to_csv(os.path.join(out_dir, "navigation_ablation.csv"), index=False)
+    print(f"\n[PASS] Saved System Ablation Scorecard to: {out_path} and navigation_ablation.csv")
     print("=" * 105)
-    return pd.DataFrame(ablation_summary)
+    return ab_df
 
 
 if __name__ == "__main__":

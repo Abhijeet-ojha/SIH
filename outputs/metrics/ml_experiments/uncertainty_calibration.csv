@@ -1,0 +1,2 @@
+method,coverage_90_pct,mean_width_90_mps,calibration_error_90,coverage_95_pct,mean_width_95_mps,calibration_error_95,mean_sigma_mps
+Split Conformal Prediction,32.136105860113425,0.8874136778283516,0.5786389413988657,37.58034026465029,1.0542257696487733,0.574196597353497,0.2731642148501336

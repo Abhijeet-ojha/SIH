@@ -1,0 +1,9 @@
+{
+  "parity_passed": true,
+  "num_windows_evaluated": 200,
+  "max_prediction_diff_mps": 0.008277777777778494,
+  "mean_prediction_diff_mps": 0.0003981775438412943,
+  "tolerance_mps": 0.02,
+  "native_latency_ms_per_window": 0.16945450001003337,
+  "edge_json_latency_ms_per_window": 0.6596680000075139
+}

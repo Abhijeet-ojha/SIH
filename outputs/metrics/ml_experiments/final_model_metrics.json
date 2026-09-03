@@ -1,0 +1,21 @@
+{
+  "production_model": "Random Forest Regressor (Complete 100 Trees)",
+  "feature_version": "2.0.0",
+  "window_sec": 1.5,
+  "sample_rate_hz": 10.0,
+  "num_features": 219,
+  "conformal_q_hat_mps": 0.44935513342846933,
+  "test_mae_mps": 1.0017876250185622,
+  "test_rmse_mps": 1.265221544224139,
+  "test_r2": 0.10254252898414444,
+  "median_ae_mps": 0.8371377525249925,
+  "p95_error_mps": 2.5048328251013365,
+  "p99_error_mps": 3.0605651751446654,
+  "mean_bias_mps": -0.23511653406343977,
+  "coverage_90_pct": 31.479101053141616,
+  "blackout_90s_exit_error_m": 416.86833333333334,
+  "blackout_90s_peak_drift_m": 429.03833333333336,
+  "trajectory_rmse_m": 134.07833333333332,
+  "infer_latency_ms": 0.028336954938622292,
+  "model_size_kb": 13389.7041015625
+}

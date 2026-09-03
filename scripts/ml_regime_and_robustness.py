@@ -177,8 +177,27 @@ def run_regime_and_robustness_analysis():
     out_dir = os.path.join(PROJECT_ROOT, "outputs", "metrics", "ml_experiments")
     os.makedirs(out_dir, exist_ok=True)
     pd.DataFrame(regime_results).to_csv(os.path.join(out_dir, "motion_regimes_evaluation.csv"), index=False)
-    pd.DataFrame(robustness_results).to_csv(os.path.join(out_dir, "robustness_perturbation_results.csv"), index=False)
-    print(f"\n[PASS] Saved Motion Regimes and Robustness results to: {out_dir}")
+    
+    rob_df = pd.DataFrame(robustness_results)
+    rob_df.to_csv(os.path.join(out_dir, "robustness_perturbation_results.csv"), index=False)
+    rob_df.to_csv(os.path.join(out_dir, "robustness_results.csv"), index=False)
+
+    # Uncertainty Calibration Summary
+    from core.uncertainty.calibrator import compute_uncertainty_metrics
+    unc_metrics = compute_uncertainty_metrics(y_test_full, preds_full, stds_full)
+    unc_df = pd.DataFrame([{
+        "method": "Split Conformal Prediction",
+        "coverage_90_pct": unc_metrics["coverage_90_pct"],
+        "mean_width_90_mps": unc_metrics["mean_width_90_mps"],
+        "calibration_error_90": unc_metrics["calibration_error_90"],
+        "coverage_95_pct": unc_metrics["coverage_95_pct"],
+        "mean_width_95_mps": unc_metrics["mean_width_95_mps"],
+        "calibration_error_95": unc_metrics["calibration_error_95"],
+        "mean_sigma_mps": unc_metrics["mean_sigma_mps"]
+    }])
+    unc_df.to_csv(os.path.join(out_dir, "uncertainty_calibration.csv"), index=False)
+
+    print(f"\n[PASS] Saved robustness_results.csv and uncertainty_calibration.csv to: {out_dir}")
     print("=" * 95)
 
 
