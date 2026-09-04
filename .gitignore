@@ -44,3 +44,6 @@ local.properties
 .DS_Store
 Thumbs.db
 .vscode/
+
+# Derived feature cache: regenerate with scripts/train_real_iovnbd.py --rebuild
+outputs/cache_real_features.npz

@@ -1,0 +1,49 @@
+REAL IO-VNBD, 23 clean drives, speed label = can_indicated
+23 drives, 90 s blackout
+
+training-set mean speed (arm C) = 12.68 m/s
+
+  [1/23] S1         ml=   53.8%  hold=   53.6%  mean=   54.7%  oracle=  55.7%  orc+hdg= 104.8%  | ml RMSE  3.26 m/s
+  [2/23] S2#seg0    ml=   42.7%  hold=   51.5%  mean=   49.4%  oracle=  39.2%  orc+hdg=  93.8%  | ml RMSE  4.96 m/s
+  [3/23] S3a        ml=    0.8%  hold=   52.0%  mean=   18.4%  oracle=   1.9%  orc+hdg=  13.0%  | ml RMSE  3.48 m/s
+  [4/23] S3b#seg0   ml=  201.4%  hold=  152.5%  mean=  216.1%  oracle= 126.6%  orc+hdg=  70.4%  | ml RMSE  6.65 m/s
+  [5/23] S3c        ml=   51.8%  hold=   56.2%  mean=   54.1%  oracle=  50.4%  orc+hdg= 113.2%  | ml RMSE  5.49 m/s
+  [6/23] M#seg0     ml=   20.6%  hold=   10.6%  mean=   37.4%  oracle=   8.9%  orc+hdg=  19.1%  | ml RMSE  5.03 m/s
+  [7/23] Vfa01      ml=   51.2%  hold=   58.5%  mean=   60.8%  oracle=  41.1%  orc+hdg=  12.1%  | ml RMSE  6.10 m/s
+  [8/23] Vfa02      ml=   70.4%  hold=   66.7%  mean=   74.2%  oracle=  67.5%  orc+hdg= 135.5%  | ml RMSE  7.96 m/s
+  [9/23] Vta1a      ml=   75.4%  hold=   84.0%  mean=   76.6%  oracle=  71.5%  orc+hdg= 114.6%  | ml RMSE  6.98 m/s
+  [10/23] Vw10       ml=  100.5%  hold=  100.0%  mean=  100.8%  oracle= 100.6%  orc+hdg=  70.0%  | ml RMSE  2.16 m/s
+  [11/23] Vw11       ml=   49.9%  hold=   49.3%  mean=   47.4%  oracle=  54.3%  orc+hdg=  38.3%  | ml RMSE  4.32 m/s
+  [12/23] Vw12       ml=   76.2%  hold=   63.9%  mean=   85.8%  oracle=  68.1%  orc+hdg=  23.5%  | ml RMSE  7.48 m/s
+  [13/23] Vw14a      ml=   83.1%  hold=   72.9%  mean=   85.5%  oracle=  70.5%  orc+hdg=  73.5%  | ml RMSE 10.65 m/s
+  [14/23] Vw14b      ml=   91.2%  hold=   82.1%  mean=   94.0%  oracle=  85.0%  orc+hdg=  38.4%  | ml RMSE 12.13 m/s
+  [15/23] Vw14c      ml=   90.9%  hold=   92.4%  mean=   90.7%  oracle=  91.2%  orc+hdg=  50.6%  | ml RMSE  3.03 m/s
+  [16/23] Vw16a      ml=   80.6%  hold=   72.8%  mean=   82.4%  oracle=  74.9%  orc+hdg=  39.9%  | ml RMSE  7.26 m/s
+  [17/23] Vw2        ml=   67.5%  hold=   45.6%  mean=   52.6%  oracle=  84.3%  orc+hdg=  80.0%  | ml RMSE  4.99 m/s
+  [18/23] Vw3        ml=   62.5%  hold=   60.8%  mean=   62.1%  oracle=  64.1%  orc+hdg=  33.5%  | ml RMSE  5.70 m/s
+  [19/23] Vw4        ml=   56.8%  hold=   54.3%  mean=   50.5%  oracle=  65.8%  orc+hdg=  35.4%  | ml RMSE  4.86 m/s
+  [20/23] Vw5        ml=   67.8%  hold=   59.5%  mean=   68.2%  oracle=  54.0%  orc+hdg=  72.7%  | ml RMSE  5.77 m/s
+  [21/23] Vw6        ml=   25.5%  hold=   20.2%  mean=   24.5%  oracle=  21.1%  orc+hdg=  11.3%  | ml RMSE  3.51 m/s
+  [22/23] Vw7        ml=   18.5%  hold=    6.0%  mean=   21.9%  oracle=   9.4%  orc+hdg=  19.6%  | ml RMSE  5.78 m/s
+  [23/23] Vw8        ml=   24.4%  hold=   17.9%  mean=   25.1%  oracle=  16.1%  orc+hdg=   6.7%  | ml RMSE  6.23 m/s
+
+========================================================================
+BLACKOUT DRIFT % = exit error / blackout distance   (lower is better)
+========================================================================
+  ml          median    62.5%   mean    63.6%   n=23
+  hold_last   median    58.5%   mean    60.2%   n=23
+  train_mean  median    60.8%   mean    66.7%   n=23
+  oracle      median    64.1%   mean    57.5%   n=23
+  oracle_speed_and_heading median    39.9%   mean    55.2%   n=23
+
+========================================================================
+VERDICT
+========================================================================
+  The ML speed source is a NET LIABILITY. 'hold_last' achieves 58.5% median blackout drift against the model's 62.5%. Make 'hold_last' the production default until the model can beat it.
+
+  The EKF is told to expect sigma_v = 0.2 m/s. The model's actual RMSE during
+  blackouts is 5.70 m/s - it is 28x more wrong than the filter
+  assumes. A filter that trusts a bad source follows it off the road; this is the
+  mechanism behind fused being worse than naive.
+
+wrote C:\Users\souri\OneDrive\Documents\Projects\SIH_dead_reckoning\SIH\outputs\metrics\real_iovnbd

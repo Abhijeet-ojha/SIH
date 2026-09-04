@@ -1,0 +1,84 @@
+{
+  "provenance": "REAL IO-VNBD, 23 clean drives, speed label = can_indicated",
+  "n_windows": 20259,
+  "n_features": 201,
+  "lodo": [
+    {
+      "holdout_driver": "A",
+      "train_windows": 14515,
+      "test_windows": 5744,
+      "mae": 5.0065,
+      "r2": -0.4509,
+      "constant_baseline_mae": 6.9035,
+      "beats_constant": true
+    },
+    {
+      "holdout_driver": "B",
+      "train_windows": 19061,
+      "test_windows": 1198,
+      "mae": 4.3257,
+      "r2": 0.5206,
+      "constant_baseline_mae": 6.572,
+      "beats_constant": true
+    },
+    {
+      "holdout_driver": "E",
+      "train_windows": 6942,
+      "test_windows": 13317,
+      "mae": 7.0418,
+      "r2": -0.0782,
+      "constant_baseline_mae": 8.4248,
+      "beats_constant": true
+    }
+  ],
+  "top_features": [
+    {
+      "feature": "a_vert_rms",
+      "importance": 0.2692238074758458
+    },
+    {
+      "feature": "a_vert_p2p",
+      "importance": 0.11659607459566652
+    },
+    {
+      "feature": "yaw_rate_spec_centroid",
+      "importance": 0.07119815001217417
+    },
+    {
+      "feature": "tilt_rate_spec_centroid",
+      "importance": 0.032892022464412765
+    },
+    {
+      "feature": "a_fwd_std",
+      "importance": 0.031986327371862106
+    },
+    {
+      "feature": "jerk_vert_rms",
+      "importance": 0.028693148757299388
+    },
+    {
+      "feature": "grav_stab_max",
+      "importance": 0.02410032331812097
+    },
+    {
+      "feature": "a_vert_std",
+      "importance": 0.02334941239029019
+    },
+    {
+      "feature": "jerk_fwd_std",
+      "importance": 0.018966292755840167
+    },
+    {
+      "feature": "grav_stab_p90",
+      "importance": 0.008998589400554697
+    },
+    {
+      "feature": "frame_instability",
+      "importance": 0.007646131876805906
+    },
+    {
+      "feature": "tilt_rate_mean",
+      "importance": 0.0067370345689182504
+    }
+  ]
+}

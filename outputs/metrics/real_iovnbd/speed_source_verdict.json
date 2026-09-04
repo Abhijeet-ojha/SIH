@@ -1,0 +1,32 @@
+{
+  "summary": {
+    "ml": {
+      "median": 62.46,
+      "mean": 63.631304347826074,
+      "n": 23
+    },
+    "hold_last": {
+      "median": 58.53,
+      "mean": 60.150434782608684,
+      "n": 23
+    },
+    "train_mean": {
+      "median": 60.76,
+      "mean": 66.66130434782607,
+      "n": 23
+    },
+    "oracle": {
+      "median": 64.09,
+      "mean": 57.48086956521738,
+      "n": 23
+    },
+    "oracle_speed_and_heading": {
+      "median": 39.89,
+      "mean": 55.21565217391304,
+      "n": 23
+    }
+  },
+  "verdict": "The ML speed source is a NET LIABILITY. 'hold_last' achieves 58.5% median blackout drift against the model's 62.5%. Make 'hold_last' the production default until the model can beat it.",
+  "assumed_sigma_mps": 0.2,
+  "median_actual_rmse_mps": 5.696
+}

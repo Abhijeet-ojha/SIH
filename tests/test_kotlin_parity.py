@@ -28,7 +28,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from scripts.export_ondevice_model import ONDEVICE_FEATURES, eval_trees, compact_features
-from src.data_loader import load_real_iovnbd_drive
+from src.iovnbd_loader import discover_pairs, load_pair
 
 MODEL_PATH = os.path.join(PROJECT_ROOT, "outputs", "models", "ondevice_model.json")
 GOLDEN_PATH = os.path.join(PROJECT_ROOT, "outputs", "models", "golden_vectors.json")
@@ -140,9 +140,9 @@ class TestOnDeviceParity(unittest.TestCase):
 
     def test_golden_vectors_reproduce(self):
         """Re-derive the golden features from the raw IMU and confirm they still match."""
-        drive = load_real_iovnbd_drive(
-            os.path.join(PROJECT_ROOT, "data", "samples", self.golden["source_drive"]),
-            driver_id="A")
+        stem = self.golden["source_drive"].split("#")[0]
+        pair = next(p for p in discover_pairs() if p["stem"] == stem)
+        drive = load_pair(pair, max_samples=6000, strict=False)
         df = drive.get_data().iloc[:self.golden["n_samples"]].reset_index(drop=True)
         X, _, idx = compact_features(df)
 

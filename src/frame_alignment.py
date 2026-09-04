@@ -69,6 +69,65 @@ def lowpass_gravity(acc: np.ndarray, dt: np.ndarray, fc_hz: float = GRAVITY_LP_H
     return g
 
 
+MAHONY_KP = 0.10          # 1/s: gravity correction rate. ~10 s time constant.
+MAHONY_KI = 0.002         # 1/s^2: gyro-bias integral term
+ACCEL_TRUST_BAND = 1.5    # m/s^2: reject the accel correction when ||a|| - g exceeds this
+
+
+def gravity_mahony(acc: np.ndarray, gyro: np.ndarray, dt: np.ndarray,
+                   kp: float = MAHONY_KP, ki: float = MAHONY_KI,
+                   trust_band: float = ACCEL_TRUST_BAND) -> np.ndarray:
+    """
+    Gyro-propagated complementary (Mahony) gravity estimate.
+
+    Why this replaces the low-pass: a first-order filter has exactly one time constant,
+    and it has to serve two jobs at once - reject linear acceleration (wants SLOW) and
+    track real tilt (wants FAST). At 0.2 Hz it resolved that conflict by absorbing any
+    acceleration sustained beyond ~1 s into "gravity", so a long steady brake read as
+    near-zero horizontal specific force. Braking is precisely the signal we need.
+
+    Here gravity is propagated from angular rate - which does not care about linear
+    acceleration at all - and only slowly corrected toward the accelerometer. In the body
+    frame a world-fixed vector obeys dv/dt = -omega x v.
+
+    Two things make the long time constant safe:
+      * ki integrates out gyro bias, which is what would otherwise make slow correction
+        drift away;
+      * the accelerometer correction is gated off entirely while ||a|| departs from g by
+        more than trust_band, i.e. exactly when the accelerometer is measuring the
+        vehicle rather than the planet.
+    """
+    acc = np.asarray(acc, dtype=float)
+    gyro = np.asarray(gyro, dtype=float)
+    n = len(acc)
+    out = np.zeros((n, 3))
+    if n == 0:
+        return out
+
+    warm = max(1, min(n, int(round(1.0 / max(float(np.median(dt)), 1e-3)))))
+    v = unit(np.mean(acc[:warm], axis=0))
+    bias = np.zeros(3)
+
+    for i in range(n):
+        a_norm = float(np.linalg.norm(acc[i]))
+        omega = gyro[i] - bias
+
+        # Trust the accelerometer only when it is plausibly reading gravity alone.
+        if abs(a_norm - G0) < trust_band and a_norm > 1e-6:
+            a_hat = acc[i] / a_norm
+            err = np.cross(v, a_hat)
+            omega = omega - kp * err
+            bias = bias + ki * err * dt[i]
+
+        v = v - np.cross(omega, v) * dt[i]
+        nv = np.linalg.norm(v)
+        if nv > 1e-9:
+            v = v / nv
+        out[i] = v * G0
+
+    return out
+
+
 def unit(v: np.ndarray, axis: int = -1) -> np.ndarray:
     """Normalise, leaving zero-length rows as zero rather than NaN."""
     n = np.linalg.norm(v, axis=axis, keepdims=True)
@@ -152,7 +211,9 @@ def align_frame(
     dt: np.ndarray,
     speed: Optional[np.ndarray] = None,
     valid_mask: Optional[np.ndarray] = None,
-    stability_window: int = 20
+    stability_window: int = 20,
+    gravity_mode: str = "mahony",
+    gravity_override: Optional[np.ndarray] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Full alignment. acc/gyro are (n, 3) in the phone body frame; dt is (n,) seconds.
@@ -164,7 +225,17 @@ def align_frame(
     gyro = np.asarray(gyro, dtype=float)
     dt = np.asarray(dt, dtype=float)
 
-    grav = lowpass_gravity(acc, dt)
+    # gravity_mode: "mahony" (default, gyro-propagated - survives sustained braking),
+    # "lowpass" (the original 0.2 Hz filter, kept for A/B comparison), or "sensor"
+    # (gravity_override, e.g. IO-VNBD's own GRAVITY columns or Android TYPE_GRAVITY).
+    if gravity_override is not None:
+        grav = np.asarray(gravity_override, dtype=float)
+    elif gravity_mode == "mahony":
+        grav = gravity_mahony(acc, gyro, dt)
+    elif gravity_mode == "lowpass":
+        grav = lowpass_gravity(acc, dt)
+    else:
+        raise ValueError(f"unknown gravity_mode {gravity_mode!r}")
     g_hat = unit(grav)
 
     # Linear (gravity-removed) acceleration.

@@ -10,6 +10,8 @@ no weights - while OnDeviceInferenceEngine.kt computed speed as
 i.e. two hardcoded constants. The README claimed on-device ML. This closes that gap.
 
 Two deliberate scope choices:
+  * Trained on REAL IO-VNBD with CAN-bus speed labels. It used to train on data/samples,
+    which was synthetic; those weights described a noise model, not a vehicle.
   * A compact 16-feature set, not the 201 the offline pipeline uses. The phone recomputes
     these from a ring buffer every window; FFT sub-band powers over twelve channels are not
     worth the battery, and a feature the Kotlin cannot reproduce exactly is a feature that
@@ -29,11 +31,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from sklearn.ensemble import GradientBoostingRegressor
-from src.data_loader import load_real_iovnbd_drive
 from src.frame_alignment import align_frame
+from src.iovnbd_loader import load_benchmark_suite
 
 MODEL_DIR = os.path.join(PROJECT_ROOT, "outputs", "models")
-SAMPLES_DIR = os.path.join(PROJECT_ROOT, "data", "samples")
 
 WINDOW_SEC = 1.5
 ONDEVICE_FEATURES = [
@@ -118,20 +119,27 @@ def eval_trees(model_json: dict, x: np.ndarray) -> float:
 
 def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
-    train_files = sorted(f for f in os.listdir(SAMPLES_DIR) if "train" in f)
-    test_files = sorted(f for f in os.listdir(SAMPLES_DIR) if "test" in f)
-    if not train_files:
-        raise SystemExit(f"no training drives in {SAMPLES_DIR}")
+    suite = load_benchmark_suite(max_samples_per_drive=6000)
+    drives = suite["clean"]
+    if len(drives) < 4:
+        raise SystemExit(f"only {len(drives)} clean drives; run scripts/fetch_iovnbd.py")
+
+    # Hold out the last drive so the exported model is reported on data it never saw.
+    train_drives, gold_drive = drives[:-1], drives[-1]
+    print(f"{suite['provenance']}")
+    print(f"[train] {len(train_drives)} drives | [golden] {gold_drive.name}\n")
 
     Xs, ys = [], []
-    for f in train_files:
-        d = load_real_iovnbd_drive(os.path.join(SAMPLES_DIR, f), driver_id="A")
+    for d in train_drives:
         X, y, _ = compact_features(d.get_data())
         Xs.append(X)
         ys.append(y)
     X = np.vstack(Xs)
     y = np.concatenate(ys)
-    print(f"[train] {X.shape[0]} windows x {X.shape[1]} features from {len(train_files)} drives")
+    ok = np.isfinite(X).all(axis=1) & np.isfinite(y)
+    X, y = X[ok], y[ok]
+    print(f"[train] {X.shape[0]} windows x {X.shape[1]} features, "
+          f"label = CAN indicated vehicle speed")
 
     model = GradientBoostingRegressor(
         n_estimators=60, max_depth=3, learning_rate=0.1, random_state=42
@@ -144,30 +152,22 @@ def main():
         "init": float(model.init_.constant_[0][0]),
         "learning_rate": float(model.learning_rate),
         "trees": [export_tree(e[0]) for e in model.estimators_],
-        "provenance": "trained on data/samples (SYNTHETIC). Retrain on real drives before "
-                      "quoting any accuracy number from this model.",
+        "provenance": suite["provenance"],
     }
     out_path = os.path.join(MODEL_DIR, "ondevice_model.json")
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
-    size_kb = os.path.getsize(out_path) / 1024.0
-    print(f"[export] {out_path} ({size_kb:.1f} KB)")
+    print(f"[export] {out_path} ({os.path.getsize(out_path)/1024.0:.1f} KB)")
 
-    # The exported JSON must evaluate identically to the sklearn object, or the Kotlin
-    # port is chasing a moving target.
     ref = np.array([eval_trees(payload, row) for row in X[:500]])
-    sk = model.predict(X[:500])
-    max_dev = float(np.max(np.abs(ref - sk)))
+    max_dev = float(np.max(np.abs(ref - model.predict(X[:500]))))
     assert max_dev < 1e-9, f"exported trees deviate from sklearn by {max_dev}"
     print(f"[verify] exported trees match sklearn to {max_dev:.2e}")
 
-    # Golden vectors: raw IMU in, features and speed out. tests/test_kotlin_parity.py
-    # checks Python against these; the Kotlin engine is checked against the same file.
-    gold_drive = load_real_iovnbd_drive(os.path.join(SAMPLES_DIR, test_files[0]), driver_id="A")
     gdf = gold_drive.get_data().iloc[:500].reset_index(drop=True)
     gX, gy, gidx = compact_features(gdf)
     golden = {
-        "source_drive": test_files[0],
+        "source_drive": gold_drive.name,
         "n_samples": int(len(gdf)),
         "input": {
             "dt": gdf["dt"].tolist(),
@@ -182,11 +182,11 @@ def main():
     gold_path = os.path.join(MODEL_DIR, "golden_vectors.json")
     with open(gold_path, "w", encoding="utf-8") as fh:
         json.dump(golden, fh)
-    print(f"[export] {gold_path} ({os.path.getsize(gold_path)/1024.0:.1f} KB, "
-          f"{len(gX)} windows)")
+    print(f"[export] {gold_path} ({os.path.getsize(gold_path)/1024.0:.1f} KB, {len(gX)} windows)")
 
-    mae = float(np.mean(np.abs(np.array(golden['predicted_speed']) - gy)))
-    print(f"[holdout] MAE on {test_files[0]}: {mae:.3f} m/s  (synthetic data - not a benchmark)")
+    mae = float(np.mean(np.abs(np.array(golden["predicted_speed"]) - gy)))
+    print(f"[holdout] MAE on unseen drive {gold_drive.name}: {mae:.3f} m/s "
+          f"(true speed mean {gy.mean():.2f} m/s)")
 
 
 if __name__ == "__main__":

@@ -292,16 +292,40 @@ class KinematicFusionEKF:
         IKH = I - K @ H
         self.P = IKH @ self.P @ IKH.T + K @ self.R_zupt @ K.T
 
+# Production default for the blackout speed source, set by measurement, not preference.
+# scripts/speed_source_ablation.py over 23 real IO-VNBD drives, 90 s outages:
+#
+#     ml                          62.5% median blackout drift
+#     hold_last                   58.5%   <- best practical source
+#     train_mean                  60.8%
+#     oracle (true CAN speed)     64.1%
+#     oracle speed AND heading    39.9%
+#
+# Two things follow. First, the ML speed source is a net liability: holding the last GNSS
+# speed beats it, so hold_last is the default until the model can win the ablation.
+# Second, and more important: perfect speed knowledge (oracle) does NOT help - it is no
+# better than the model - while adding perfect heading nearly halves the error. The
+# bottleneck is yaw, not speed. Effort spent on the speed regressor is effort spent on the
+# wrong axis.
+DEFAULT_SPEED_SOURCE = "hold_last"
+
+
 def run_fusion_pipeline(
     df: pd.DataFrame,
     ai_speed: np.ndarray,
     ai_speed_std: Optional[np.ndarray] = None,
     driver_style: str = "normal",
     blackout_start_sec: float = 60.0,
-    blackout_end_sec: float = 150.0
+    blackout_end_sec: float = 150.0,
+    speed_source: str = DEFAULT_SPEED_SOURCE,
 ) -> pd.DataFrame:
     """
-    Executes the Confidence-Aware 5-State EKF with Multi-Sensor Context Engine and Adaptive NHC.
+    Executes the Confidence-Aware 6-State EKF with Multi-Sensor Context Engine and NHC.
+
+    speed_source controls what feeds forward velocity DURING the outage:
+      "hold_last"  freeze the last GNSS speed (default - see DEFAULT_SPEED_SOURCE)
+      "ml"         use ai_speed as supplied
+    Outside the outage both are irrelevant, because GNSS is updating the filter directly.
     """
     n = len(df)
     t = df["timestamp"].values
@@ -315,7 +339,15 @@ def run_fusion_pipeline(
     ambient_lux = df["ambient_lux"].values if "ambient_lux" in df.columns else np.ones(n) * 1500.0
 
     if ai_speed_std is None:
-        ai_speed_std = np.ones(n) * 0.2
+        # The old default of a flat 0.2 m/s was wildly overconfident: the model's measured
+        # RMSE during real blackouts is 5.70 m/s, i.e. 28x larger. Telling the filter a
+        # source is 28x better than it is makes the filter follow it off the road, which is
+        # the mechanism behind fused-worse-than-naive. Absent a calibrated sigma, assume
+        # the source is poor rather than perfect.
+        ai_speed_std = np.ones(n) * 5.7
+
+    if speed_source not in ("hold_last", "ml"):
+        raise ValueError(f"unknown speed_source {speed_source!r}")
 
     dt_arr = df["dt"].values if "dt" in df.columns else np.diff(t, prepend=t[0])
     if n > 1:
@@ -330,8 +362,20 @@ def run_fusion_pipeline(
     yaw_rate = frame["yaw_rate"]
 
     step_events = df["step_events"].values if "step_events" in df.columns else None
-    gate = MotionGate().classify_frame(frame, speed_hint=ai_speed, step_events=step_events)
+    # The gate needs to know when it is flying blind. During a blackout a false "stopped"
+    # freezes position and the error is never observed until GNSS returns, so the gate
+    # switches to thresholds that bias toward MOVING (see motion_gate.GateThresholds).
+    gnss_available = ~((t >= blackout_start_sec) & (t < blackout_end_sec))
+    gate = MotionGate().classify_frame(frame, speed_hint=ai_speed, step_events=step_events,
+                                       gnss_available=gnss_available)
     gate_state = gate["state"]
+
+    if speed_source == "hold_last":
+        # Freeze the last speed seen before GNSS was lost, and keep it for the outage.
+        pre = np.flatnonzero(t < blackout_start_sec)
+        held = float(gps_v[pre[-1]]) if len(pre) else float(gps_v[0])
+        in_bo = (t >= blackout_start_sec) & (t < blackout_end_sec)
+        ai_speed = np.where(in_bo, held, ai_speed)
 
     context_engine = VehicleContextEngine()
 
@@ -370,7 +414,13 @@ def run_fusion_pipeline(
         # future accelerometer samples when deciding whether the vehicle was stopped -
         # future data leaking into a supposedly real-time filter.
         s_idx = max(0, i - win)
-        acc_var = np.var(acc_x[s_idx:i + 1]) + np.var(acc_y[s_idx:i + 1])
+        # Variance of HORIZONTAL specific force about gravity, not of the raw body x/y
+        # axes. The raw version was the last frame-dependent decision left in the pipeline:
+        # var(acc_x)+var(acc_y) changes when the phone is rotated, so the standstill branch
+        # below could reach a different verdict for the same drive at a different mounting.
+        # tests/test_rotation_invariance.py caught it as a 7.45% spread in end-to-end
+        # blackout drift while every alignment channel still matched to 1e-14.
+        acc_var = float(np.var(frame["a_horiz_mag"][s_idx:i + 1]))
         gyro_abs = np.abs(yaw_rate[i])
 
         # Multi-sensor context detection
@@ -438,8 +488,23 @@ def run_fusion_pipeline(
         "is_gnss_blackout": is_blackout,
         "context_mode": context_modes,
         "open_loop_pos_x": pre_update_px,
-        "open_loop_pos_y": pre_update_py
+        "open_loop_pos_y": pre_update_py,
+        "gate_state": gate_state,
     })
+
+    # Phase 5 metric: time spent frozen while the vehicle was actually moving, during a
+    # blackout. This is the failure the asymmetric thresholds exist to prevent, and it is
+    # invisible in position error alone until it has already cost metres.
+    if "speed" in df.columns:
+        truly_moving = df["speed"].values > 1.0
+        frozen = np.array([m in ("STANDSTILL", "PHONE_HANDLED") for m in context_modes])
+        false_stop = frozen & truly_moving & is_blackout
+        res["false_stationary"] = false_stop
+        res.attrs["false_stationary_blackout_sec"] = float(np.sum(false_stop * dt_arr))
+        # Distance the vehicle covered while the filter believed it was parked - the
+        # along-track error this directly creates.
+        res.attrs["false_stationary_blackout_m"] = float(
+            np.sum(df["speed"].values[false_stop] * dt_arr[false_stop]))
 
     if "pos_x" in df.columns and "pos_y" in df.columns:
         dx = fused_px - df["pos_x"].values

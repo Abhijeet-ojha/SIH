@@ -1,3 +1,23 @@
+> **Status note — real data.** Every figure in this document now comes from the real
+> IO-VNBD dataset (3.7 GB, fetched by `scripts/fetch_iovnbd.py`), with speed labels taken
+> from the vehicle CAN bus. Earlier revisions reported numbers from a synthetic generator,
+> which is now quarantined under `tests/fixtures/` behind an import guard.
+>
+> The headline metric is **blackout drift = exit error / distance travelled with GNSS off**,
+> measured strictly open-loop. A previous revision led with "< 0.05% cumulative drift",
+> which divided end-of-drive error by total distance — after GNSS had returned and was
+> correcting the filter. That was not a dead-reckoning number.
+>
+> Current honest state on 23 real drives with 90 s outages: naive DR 86.9% median blackout
+> drift, fused 57.0%. **2 of 23 drives meet the ~10% target, and fused is worse than naive
+> on 7 of 23** (S3c, M#seg0, Vfa01, Vfa02, Vw10, Vw14c, Vw16a).
+>
+> The ablation in `outputs/metrics/real_iovnbd/` shows why, and it is not what we expected:
+> perfect speed knowledge (oracle CAN speed) gives 64.1% — no better than the ML model —
+> while perfect speed *and* heading gives 39.9%. **Heading, not speed, is the dominant
+> error source.** Separately, the filter was assuming sigma_v = 0.2 m/s against a measured
+> 5.70 m/s, i.e. 28x overconfident; correcting that moved the ML arm from 62.5% to 55.1%.
+
 # Technical Proposal & Defense Narrative
 ## Smart India Hackathon (SIH) — Problem Statement 168
 ### High-Precision Vehicle Dead Reckoning & GNSS Fusion Engine for Low-Cost Smartphone Inertial Sensors
@@ -133,8 +153,19 @@ Evaluated on $N=6$ unseen real drives from the public IO-VNBD dataset (Coventry,
 
 | Metric | Naive Dead Reckoning (Baseline) | AI-DR Pure (ML Speed) | AI-DR + 6-State EKF Fusion (Final) | Improvement vs Baseline |
 | :--- | :--- | :--- | :--- | :--- |
-| **Blackout drift % (PRIMARY: exit error / blackout distance)** | 46.34% ± 39.44% | 116.26% ± 78.15% | **79.43% ± 43.39%** | currently **worse than naive** |
-| Closed-loop drift % (GPS restored — not a DR number) | 40.45% ± 28.3% | 75.52% ± 55.64% | 2.22 m final | not a dead-reckoning result |
+| **Blackout drift % (PRIMARY: exit error / blackout distance)**, median over 23 REAL drives | 86.9% | 55.8% | **57.0%** | 2 of 23 meet the 10% target; fused worse than naive on 7 of 23 |
+
+Ablation on the same 23 drives, changing only the speed source (`scripts/speed_source_ablation.py`):
+
+| Speed source | Median blackout drift |
+| :--- | :--- |
+| ML regressor | 62.5% |
+| Last GNSS speed, held | 58.5% |
+| Training-set mean | 60.8% |
+| Oracle (true CAN speed) | 64.1% |
+| **Oracle speed AND oracle heading** | **39.9%** |
+
+Perfect speed buys nothing; perfect heading nearly halves the error.
 | **90s Blackout Peak Drift** | 2285.58 m ± 2009.71 m | 631.46 m ± 366.63 m | **425.36 m ± 325.07 m** | **81.4%** reduction |
 | **90s Blackout Terminal Exit Error** | 2285.58 m ± 2009.71 m | 631.46 m ± 366.63 m | **412.96 m ± 316.29 m** | **81.9%** reduction |
 | **Post-Reacquisition Settled Error** | N/A (Diverges indefinitely) | N/A (Diverges linearly) | **20.54 m ± 16.80 m** | Re-converged within 5s |

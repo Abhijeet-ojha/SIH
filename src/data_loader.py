@@ -426,7 +426,18 @@ def get_real_iovnbd_benchmark_suite(max_samples_per_drive: int = 3000) -> Dict[s
     repo_base = os.path.join(proj_root, "data", "IO-VNBD-repo", "Synchronised V abd S datasets", "Categorised IOVNB Dataset")
 
     if not os.path.isdir(repo_base):
-        return get_sample_fallback_suite(max_samples_per_drive)
+        # This used to fall back to data/samples with a warning banner. A banner is not
+        # enough: it still let a benchmark script run to completion and write plausible
+        # numbers into outputs/metrics/, and the whole failure mode being corrected here is
+        # numbers that describe a simulator being read as if they described a vehicle.
+        raise FileNotFoundError(
+            f"IO-VNBD not found at {repo_base}.\n"
+            "Run: python scripts/fetch_iovnbd.py  (or --subset for the synchronised pairs "
+            "only).\n"
+            "There is deliberately no synthetic fallback - synthetic data cannot exercise "
+            "the vibration-to-speed coupling this method depends on, so any metric it "
+            "produced would be meaningless."
+        )
 
     a_s1 = os.path.join(repo_base, "S (Driver A)", "S1", "S-S1.csv")
     a_s2 = os.path.join(repo_base, "S (Driver A)", "S2", "S-S2.csv")

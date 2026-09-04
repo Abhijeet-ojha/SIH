@@ -50,6 +50,38 @@ class GateThresholds:
     # Turn it on once real drive data confirms the correlation holds.
     use_coherence_veto: bool = False
 
+    # ── Blackout regime: the gate must fail toward "moving" ──────────────────
+    # The two error directions are not symmetric.
+    #
+    #   False "stopped" during a blackout: the filter freezes position while the vehicle
+    #   keeps going. Every metre travelled becomes along-track error, and nothing observes
+    #   it until GNSS returns - by which point the error is baked in. Map matching cannot
+    #   recover it either, since map matching only fixes cross-track.
+    #
+    #   False "moving" during a blackout: the filter integrates a small speed while parked.
+    #   Bounded by however long the stop lasts, and partially self-correcting because a
+    #   stopped vehicle produces almost no forward signal to integrate.
+    #
+    #   False "stopped" while GNSS is up: corrected on the very next fix. Nearly free.
+    #
+    # So: with GNSS available, use the normal thresholds. During a blackout, demand much
+    # stronger evidence before declaring anything other than MOVING - tighter stillness
+    # thresholds, a looser handling threshold, and a longer debounce.
+    blackout_still_acc_rms: float = 0.06        # half of still_acc_rms
+    blackout_still_yaw_rate: float = 0.01       # half of still_yaw_rate
+    blackout_grav_stability_max: float = 0.16   # double: harder to call "handled"
+    blackout_tilt_rate_max: float = 0.50        # double
+    blackout_debounce_frames: int = 12          # vs 5: needs sustained evidence
+    # Corroboration requirement. IMU quietness alone cannot separate "parked" from
+    # "gliding smoothly on a good road" - both are silent. With GNSS up that ambiguity is
+    # resolved on the next fix; during a blackout it is not, and a 12 m/s cruise mistaken
+    # for a stop loses 12 m every second with nothing to catch it (measured: 360 m over a
+    # 30 s outage before this precondition existed).
+    # Physics settles it: a vehicle cannot be stationary if the speed estimate still says
+    # it is moving and no deceleration was ever observed. So during a blackout, STATIONARY
+    # additionally requires the speed estimate to have come down.
+    blackout_still_max_speed: float = 2.0       # m/s
+
     @classmethod
     def calibrate(cls, feats: Dict[str, np.ndarray], is_vehicle: np.ndarray,
                   false_positive_target: float = 0.02) -> "GateThresholds":
@@ -97,13 +129,30 @@ class MotionGate:
         a_lat: Optional[np.ndarray] = None,
         speed_hint: Optional[np.ndarray] = None,
         step_events: Optional[np.ndarray] = None,
+        gnss_available: Optional[np.ndarray] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Returns dict with 'state' (object array of MOVING/STATIONARY/HANDLING) and
         'in_vehicle_moving' (bool array). All inputs come from frame_alignment.align_frame.
+
+        gnss_available: per-sample bool. Where it is False the gate is in the blackout
+        regime and biases toward MOVING, because a false stop there is unrecoverable
+        (see GateThresholds). Omit it and every sample is treated as GNSS-available,
+        which is the permissive-to-stopping behaviour and is only safe with a fix.
         """
         n = len(grav_stability)
         w = self.window
+        if gnss_available is None:
+            blackout = np.zeros(n, dtype=bool)
+        else:
+            blackout = ~np.asarray(gnss_available, dtype=bool)
+
+        # Per-sample thresholds, switched by regime.
+        th = self.th
+        still_acc_th = np.where(blackout, th.blackout_still_acc_rms, th.still_acc_rms)
+        still_yaw_th = np.where(blackout, th.blackout_still_yaw_rate, th.still_yaw_rate)
+        grav_th = np.where(blackout, th.blackout_grav_stability_max, th.grav_stability_max)
+        tilt_th = np.where(blackout, th.blackout_tilt_rate_max, th.tilt_rate_max)
 
         tilt_rms = _rolling(np.abs(tilt_rate), w, lambda v: float(np.sqrt(np.mean(v**2))))
         acc_rms = _rolling(a_horiz_mag, w, lambda v: float(np.sqrt(np.mean(v**2))))
@@ -112,7 +161,7 @@ class MotionGate:
         # 1. Phone is being handled: gravity direction wandering, or the phone is being
         #    rotated about a non-vertical axis. Either means the body frame is no longer
         #    the vehicle frame, so any speed we infer is meaningless.
-        handled = (grav_stability > self.th.grav_stability_max) | (tilt_rms > self.th.tilt_rate_max)
+        handled = (grav_stability > grav_th) | (tilt_rms > tilt_th)
 
         # 2. Walking beats every inertial heuristic: if the OS says steps, it is steps.
         if step_events is not None:
@@ -120,7 +169,13 @@ class MotionGate:
             handled |= steps > 0
 
         # 3. Genuinely still: nothing horizontal, no yaw.
-        still = (acc_rms < self.th.still_acc_rms) & (yaw_abs < self.th.still_yaw_rate)
+        still = (acc_rms < still_acc_th) & (yaw_abs < still_yaw_th)
+
+        # During a blackout, also require the speed estimate to agree. Without this the
+        # gate will freeze a smoothly cruising vehicle purely because its IMU is quiet.
+        if speed_hint is not None:
+            sh = np.asarray(speed_hint, dtype=float)
+            still = still & ~(blackout & (sh > th.blackout_still_max_speed))
 
         # 4. Coherence check, when we have enough to compute it. A vehicle turning at
         #    yaw rate w while moving at v feels lateral acceleration v*w. Shaking does not
@@ -153,7 +208,11 @@ class MotionGate:
                 run_len += 1
             else:
                 run_val, run_len = raw[i], 1
-            if run_len >= self.th.debounce_frames:
+            # Leaving MOVING during a blackout needs sustained evidence; entering MOVING,
+            # or any transition with GNSS up, uses the normal debounce.
+            need = (th.blackout_debounce_frames
+                    if (blackout[i] and run_val != MOVING) else th.debounce_frames)
+            if run_len >= need:
                 current = run_val
             state[i] = current
 
@@ -167,7 +226,8 @@ class MotionGate:
         }
 
     def classify_frame(self, fr: Dict[str, np.ndarray], speed_hint: Optional[np.ndarray] = None,
-                       step_events: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
+                       step_events: Optional[np.ndarray] = None,
+                       gnss_available: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
         """Convenience: take frame_alignment.align_frame() output directly."""
         return self.classify(
             grav_stability=fr["grav_stability"],
@@ -177,6 +237,7 @@ class MotionGate:
             a_lat=fr.get("a_lat"),
             speed_hint=speed_hint,
             step_events=step_events,
+            gnss_available=gnss_available,
         )
 
 

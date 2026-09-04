@@ -1,0 +1,39 @@
+REAL IO-VNBD, 23 clean drives, speed label = can_indicated
+23 drives | 90 s blackout
+
+  [1/23] S1         naive= 180.6%  fused(hold)=  61.7%  fused(ml)=  65.7%
+  [2/23] S2#seg0    naive= 270.4%  fused(hold)=  55.7%  fused(ml)=  55.8%
+  [3/23] S3a        naive= 259.5%  fused(hold)=  31.7%  fused(ml)=   6.0%
+  [4/23] S3b#seg0   naive= 329.3%  fused(hold)= 156.0%  fused(ml)= 201.2%
+  [5/23] S3c        naive=  41.5%  fused(hold)=  57.0%  fused(ml)=  50.3%   <-- FUSED WORSE
+  [6/23] M#seg0     naive=  10.0%  fused(hold)=  11.0%  fused(ml)=  19.8%   <-- FUSED WORSE
+  [7/23] Vfa01      naive=   7.7%  fused(hold)=  39.1%  fused(ml)=  32.7%   <-- FUSED WORSE
+  [8/23] Vfa02      naive=  15.9%  fused(hold)=  83.7%  fused(ml)=  78.5%   <-- FUSED WORSE
+  [9/23] Vta1a      naive=  94.0%  fused(hold)=  72.3%  fused(ml)=  50.6%
+  [10/23] Vw10       naive=  35.4%  fused(hold)=  60.2%  fused(ml)=  66.7%   <-- FUSED WORSE
+  [11/23] Vw11       naive= 111.2%  fused(hold)=   9.7%  fused(ml)=   8.8%
+  [12/23] Vw12       naive=  61.1%  fused(hold)=  28.8%  fused(ml)=  47.5%
+  [13/23] Vw14a      naive=  80.4%  fused(hold)=  36.8%  fused(ml)=  55.1%
+  [14/23] Vw14b      naive=  86.9%  fused(hold)=  65.3%  fused(ml)=  77.9%
+  [15/23] Vw14c      naive=  83.0%  fused(hold)=  83.6%  fused(ml)=  81.2%   <-- FUSED WORSE
+  [16/23] Vw16a      naive=  70.9%  fused(hold)=  77.0%  fused(ml)=  77.2%   <-- FUSED WORSE
+  [17/23] Vw2        naive= 208.6%  fused(hold)= 123.0%  fused(ml)= 100.9%
+  [18/23] Vw3        naive=  62.4%  fused(hold)=  49.3%  fused(ml)=  53.2%
+  [19/23] Vw4        naive= 203.8%  fused(hold)=  79.3%  fused(ml)=  76.3%
+  [20/23] Vw5        naive= 104.3%  fused(hold)=  63.0%  fused(ml)=  69.3%
+  [21/23] Vw6        naive=  81.5%  fused(hold)=  25.0%  fused(ml)=  25.3%
+  [22/23] Vw7        naive= 244.7%  fused(hold)=   4.4%  fused(ml)=   2.0%
+  [23/23] Vw8        naive= 775.6%  fused(hold)=  48.5%  fused(ml)=  77.8%
+
+========================================================================
+BLACKOUT DRIFT = exit error / blackout distance   (median over drives)
+========================================================================
+  naive DR (aligned)        86.9%
+  fused, hold_last          57.0%   <- production
+  fused, ML speed           55.8%
+
+  meets the 10% target:   2 of 23 drives
+  fused WORSE than naive: 7 of 23 drives
+    S3c, M#seg0, Vfa01, Vfa02, Vw10, Vw14c, Vw16a
+
+wrote C:\Users\souri\OneDrive\Documents\Projects\SIH_dead_reckoning\SIH\outputs\metrics\real_iovnbd

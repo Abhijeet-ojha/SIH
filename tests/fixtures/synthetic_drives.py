@@ -1,6 +1,17 @@
 """
-generate_synthetic_drives.py
-Synthetic multi-driver drive generator.
+tests/fixtures/synthetic_drives.py
+Synthetic multi-driver drive generator - QUARANTINED TEST FIXTURE.
+
+DO NOT USE THIS FOR ANY MEASUREMENT.
+
+This generator produced every number the repo reported before real IO-VNBD was on disk,
+and those numbers were meaningless: synthetic vibration is drawn from a hand-written noise
+model, so it cannot exercise the vibration-to-speed coupling the whole method depends on.
+Tuning anything against it optimises a simulator.
+
+It lives under tests/ and carries an import guard (see below) so no benchmark or training
+script can pull it in by accident. Its only legitimate uses are unit-test fixtures where a
+trajectory with known ground truth is needed to check a formula.
 
 Renamed from download_dataset.py, which downloaded nothing: it generated synthetic
 Delhi-coordinate data while the README told a fresh clone it fetched IO-VNBD. Acquire
@@ -18,6 +29,16 @@ import os
 import sys
 import numpy as np
 import pandas as pd
+
+# Hard quarantine. Anything under tests/ may import this; nothing else may. Benchmark and
+# training code must fail loudly rather than quietly measure a simulator.
+_IMPORTER = sys._getframe(1).f_globals.get("__file__", "") if hasattr(sys, "_getframe") else ""
+if _IMPORTER and "tests" not in os.path.normpath(_IMPORTER).split(os.sep)         and os.path.basename(_IMPORTER) != "synthetic_drives.py":
+    raise ImportError(
+        "tests/fixtures/synthetic_drives.py is a quarantined test fixture and must not be "
+        f"imported by {_IMPORTER}. Synthetic data cannot validate this system - use "
+        "src/iovnbd_loader.py with real IO-VNBD (scripts/fetch_iovnbd.py)."
+    )
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")

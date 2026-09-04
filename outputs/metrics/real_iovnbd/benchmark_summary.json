@@ -1,0 +1,18 @@
+{
+  "n_drives": 23,
+  "naive_drift_pct_median": 86.9,
+  "fused_hold_drift_pct_median": 57.0,
+  "fused_ml_drift_pct_median": 55.8,
+  "n_fused_worse_than_naive": 7,
+  "drives_fused_worse": [
+    "S3c",
+    "M#seg0",
+    "Vfa01",
+    "Vfa02",
+    "Vw10",
+    "Vw14c",
+    "Vw16a"
+  ],
+  "n_meeting_10pct_target": 2,
+  "provenance": "REAL IO-VNBD, 23 clean drives, speed label = can_indicated"
+}
