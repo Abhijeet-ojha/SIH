@@ -2,11 +2,112 @@
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Verification](https://img.shields.io/badge/100%25-Bitwise%20Reproducible-brightgreen.svg)]()
 
-Production-grade, end-to-end prototype for **Smart India Hackathon (SIH) Problem Statement 168**: *AI-Assisted Dead Reckoning for Terrestrial Navigation in Extended GNSS-Denied Environments*.
+Research and demonstration prototype for **Smart India Hackathon (SIH) Problem Statement 168**: *AI-Assisted Dead Reckoning for Terrestrial Navigation in Extended GNSS-Denied Environments*.
 
 Developed and evaluated on real multi-driver data from the **IO-VNBD Benchmark Suite** (Coventry, UK).
+
+## NavPulse indoor walking prototype - version 2.1.0
+
+NavPulse now has a dedicated **Indoor walking / GPS off** mode for demonstrating
+relative pedestrian motion in a room. It starts at local `(0, 0)` without waiting
+for a satellite fix or requesting location permission. The vehicle estimator and
+its phone-handling gate are bypassed in this mode.
+
+**Publication status:** the Flutter implementation and signed demo APK have been
+built in the development workspace but are not yet published on `main` or as a
+GitHub Release. The instructions below apply to that local 2.1.0 build; cloning
+`main` alone does not yet provide the Flutter app. This README update does not
+publish an APK download.
+
+### Two navigation modes
+
+| Mode | Position input | Intended demonstration |
+| --- | --- | --- |
+| Indoor walking (default in 2.1.0) | Accelerometer step cycles, relative phone heading, configured step length | Walking from a local start point with GPS and networking off |
+| Vehicle navigation | GNSS, IMU, motion gate, bundled speed model and six-state EKF | Vehicle tracking and controlled GNSS withholding |
+
+Indoor tracking requests accelerometer and gyroscope samples at approximately
+50 Hz. Android's game rotation vector supplies relative heading when available,
+with rotation-vector or gyroscope fallback. Each detected step advances the
+estimated position; the map redraws the trail at room scale with a START marker.
+The default step length is **0.65 m**, and the step threshold is **0.6**.
+
+### Install and demonstrate the local APK
+
+Local artifact: `outputs/apk/navpulse-indoor-walk.apk` (approximately 19.2 MB).
+Package: `com.sih2026.navpulse`, version `2.1.0`, version code `2`.
+It is a release-mode APK signed with the local debug key for sideloaded demos.
+
+1. Install the new APK as an update to NavPulse Localizer.
+2. Enable airplane mode. Also turn off Wi-Fi and Bluetooth if they remain enabled;
+   phone Location can be off for indoor mode.
+3. Open the app and confirm **INDOOR WALK / READY** appears.
+4. Hold the phone screen-up, top edge pointing in your walking direction. Tap
+   **Play** and hold still for two seconds while the detector warms up.
+5. Walk 8-10 normal steps. Watch the step count, estimated distance and amber trail.
+6. Turn your body and phone together through 90 degrees, then continue walking.
+7. Stop walking: speed returns to zero after about 1.4 seconds without a detected
+   step. Tap **Stop**, then **Sessions**, to inspect the session summary.
+
+The presentation handset is a **OnePlus Nord CE 3**. Physical performance on that
+handset has not yet been verified by the developer; test a short route before
+presenting. The indoor code path uses local motion sensors and does not request
+GNSS or network access. An airplane-mode walkthrough on the actual handset is
+still a required demonstration check, not a completed validation claim.
+
+### Troubleshooting the room demo
+
+- **Still says SEARCHING:** check that the new 2.1.0 APK is installed and Indoor
+  walking is enabled. The previous app used the vehicle pipeline and waited for GPS.
+- **No steps:** open **Pipeline** and inspect accelerometer rate and step signal.
+  A zero rate or sensor error indicates a sensor-stream problem. If samples are
+  live but gentle steps are missed, stop and lower **Navigate > Step threshold**
+  from `0.6` to `0.4`, then restart.
+- **Distance scale is wrong:** while stopped, adjust step length using a measured
+  distance divided by the detected step count.
+- **Trail direction is wrong:** keep the phone facing your walking direction and
+  turn it together with your body. Restart to establish a new starting direction.
+- **More panels:** swipe the horizontal panel selector to reach Sessions or Settings.
+
+Keep the app foregrounded during the demo. Session records are currently in memory
+and disappear when the app process closes.
+
+### Validation and limits
+
+For the local 2.1.0 build:
+
+- **22 Flutter tests passed**, covering pedestrian signal detection, gentle gait,
+  turns, stopping, stationary noise, GPS-free startup, phone portrait layout, and
+  existing vehicle/filter functionality.
+- **9 Python model parity checks passed** for feature order, thresholds and the
+  exported model. These do not validate pedestrian accuracy or compiled
+  cross-language floating-point equivalence.
+- Android release build completed; APK signature and package/version checks passed.
+- Pedestrian movement tests use controlled sensor signals. No measured indoor
+  position-accuracy result or completed physical-phone walk test is claimed.
+
+This is **relative pedestrian dead reckoning**: it estimates movement from the
+starting point, not indoor latitude/longitude or a floor plan. Step length,
+missed/false steps, independent phone rotation and heading drift affect the path.
+Repeated hand shaking can cause false steps. The displayed drift allowance is a
+heuristic, not a calibrated confidence interval. Vehicle benchmark results below
+do not measure this pedestrian mode.
+
+### Build the Flutter source when available
+
+The local app is under `flutter_app/`. The verified toolchain was Flutter 3.24.5 /
+Dart 3.5.4, Java 17 and Android SDK 34. Configure `JAVA_HOME` and `ANDROID_HOME` for
+your machine, then run from that directory:
+
+```bash
+flutter pub get
+flutter test
+flutter build apk --release --no-shrink
+```
+
+Build output: `build/app/outputs/flutter-apk/app-release.apk`. On Windows, a local
+build directory outside OneDrive can avoid synchronization-related file locks.
 
 ---
 
@@ -34,7 +135,13 @@ Developed and evaluated on real multi-driver data from the **IO-VNBD Benchmark S
 
 ---
 
-## 📊 Benchmark Summary (IO-VNBD Real Drives, 90s Blackout)
+## Historical vehicle benchmark summary
+
+> These are legacy figures retained from the earlier vehicle pipeline. The
+> headline cumulative-drift figure includes GNSS recovery and must not be
+> presented as open-loop blackout accuracy. Later development identified speed
+> unit and phone/vehicle time-alignment issues. This table does not validate
+> the indoor walking prototype or establish current navigation accuracy.
 
 | Metric | Naive Dead Reckoning (Baseline) | AI-DR Pure (ML Speed) | AI-DR + 6-State EKF Fusion (Final) | Improvement |
 | :--- | :--- | :--- | :--- | :--- |
