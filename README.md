@@ -110,17 +110,66 @@ small — which is why a motorway drive appeared to top out at 10.6 km/h. **Spee
 come from CAN**, and the loader cross-checks ∫v·dt against GPS path length (real drives
 land at 0.05–1.2%).
 
-### Headline benchmark, 23 real drives, 90 s blackout
+### The dataset is not synchronised, and the gyro axes are not what the headers say
+
+Two defects found this run, both in the published data, both verified numerically. Together
+they were the largest single cause of poor results:
+
+**1. The S- (phone) and V- (vehicle) files are misaligned in time**, despite living in a
+directory called "Synchronised V abd S datasets". Cross-correlating the phone's vertical
+gyro against the CAN bus yaw rate — the same physical quantity, two instruments — gives:
+
+| Drive | Lag | Correlation at 0 lag | Correlation at best lag |
+| :--- | ---: | ---: | ---: |
+| S3a | +6.7 s | 0.200 | **0.974** |
+| S2 | −8.7 s | — | 0.918 |
+| S3c | −0.5 s | — | 0.996 |
+| Vfa02 | −8.8 s | — | 0.174 |
+
+Offsets run from −39 s to +14 s and differ per drive. Every model trained before this was
+pairing IMU windows with labels from several seconds later. `estimate_sv_lag()` now
+measures and corrects the offset on load.
+
+**2. The gyroscope axis order does not match the accelerometer's.** Accelerometer and
+GRAVITY both put vertical on Z (GRAVITY Z ≈ 9.806). The gyroscope does not: on every drive
+tested, the channel labelled **"Pitch"** carries vehicle yaw. Magnitudes confirm it — CAN
+yaw p99 = 0.5428 rad/s, "Pitch" p99 = 0.5504, "Yaw" p99 = 0.1072 — and the channel labelled
+"Yaw" correlates **0.000** with the vehicle's actual turning.
+
+Before the fix the phone's yaw rate was 1–14% of the vehicle's true yaw rate. After it,
+the regression slope is **0.92–1.01 on every drive**, and integrated heading tracks the CAN
+yaw rate to **1.0°–7.2° over 90 seconds** on the good drives. Heading was the dominant
+error term identified by the ablation; this is what fixing it looks like.
+
+A consequence worth stating: only **6 of 23** drives have a phone that actually tracks the
+vehicle in yaw (correlation ≥ 0.55 after lag correction). The rest — mostly Driver E's `Vw`
+series — do not, so their *heading* is unusable even though their *speed* data is fine.
+Those two uses are now separated rather than conflated.
+
+### Headline benchmark — 6 heading-reliable drives, 90 s blackout
 
 | Configuration | Median blackout drift |
 | :--- | :--- |
-| Naive DR (with strapdown alignment) | 86.9% |
-| **Fused, `hold_last` speed (production default)** | **57.0%** |
-| Fused, ML speed | 55.8% |
+| Naive DR (with strapdown alignment) | 126.3% |
+| **Fused, production** | **51.3%** |
 
-- **2 of 23 drives meet the ~10% target.**
-- **Fused is worse than naive on 7 of 23 drives**: `S3c`, `M#seg0`, `Vfa01`, `Vfa02`,
-  `Vw10`, `Vw14c`, `Vw16a`. Named rather than averaged away.
+Per drive:
+
+| Drive | Naive | Fused | |
+| :--- | ---: | ---: | :--- |
+| S1 | 157.2% | 65.7% | |
+| S2 | 241.1% | 27.8% | |
+| S3a | 215.0% | 36.9% | 4.9% with the ML speed source |
+| S3c | 44.8% | 132.6% | **fused worse than naive** |
+| M | 92.0% | 32.1% | |
+| Vw5 | 95.5% | 73.0% | |
+
+**0 of 6 drives meet the ~10% target. Fused is worse than naive on 1 of 6** (`S3c`, whose
+GNSS heading reference disagrees with both the gyro and the CAN bus by 267° over the
+window — unresolved).
+
+Across all 23 clean drives (including the 17 whose heading is unreliable): naive 86.9%,
+fused 57.0%, worse than naive on 7.
 
 ### The speed-source ablation, and what it found
 
@@ -154,9 +203,9 @@ even perfect speed *and* heading leaves 39.9%, a third error source remains beyo
 
 | Held-out driver | MAE | R² | Constant-baseline MAE | Verdict |
 | :--- | :--- | :--- | :--- | :--- |
-| A | 5.01 m/s | −0.451 | 6.90 | beats constant |
-| B | 4.33 m/s | **0.521** | 6.57 | beats constant |
-| E | 7.04 m/s | −0.078 | 8.42 | beats constant |
+| A | 4.37 m/s | −0.156 | 6.94 | beats constant |
+| B | 4.32 m/s | **0.507** | 6.55 | beats constant |
+| E | 6.97 m/s | −0.098 | 8.45 | beats constant |
 
 It now beats a constant predictor on every held-out driver — it did not before — but R² is
 still negative on two of three. Top feature is `a_vert_rms` (importance 0.269): road
@@ -172,7 +221,7 @@ rotations of the raw accelerometer, gyroscope and gravity streams, on a real dri
 | Measure | Result |
 | :--- | :--- |
 | Max deviation of any alignment channel | **1e-14 to 1e-16** (machine precision) |
-| Blackout drift across 12 mountings | median 31.64%, min 31.64%, max 31.64% |
+| Blackout drift across 12 mountings | median 42.02%, min 42.02%, max 42.02% |
 | Spread | **0.000 pp = 0.00% relative** (requirement: < 5%) |
 
 That spread was 0.93% until this test caught a real defect: `run_fusion_pipeline` still
@@ -190,8 +239,8 @@ accelerometer:
 
 | Gravity estimator | Deceleration retained |
 | :--- | :--- |
-| 0.2 Hz low-pass (old, still reachable via `gravity_mode="lowpass"`) | 15% |
-| Gyro-propagated Mahony (new default) | **51%** — 3.5× better |
+| 0.2 Hz low-pass (old, still reachable via `gravity_mode="lowpass"`) | 19% |
+| Gyro-propagated Mahony (new default) | **61%** — 3.3× better |
 
 ### Gate asymmetry
 
@@ -201,6 +250,32 @@ On a marginal drive: 306 STATIONARY samples with GNSS available, **4** during a 
 On a silent 12 m/s cruise through a 30 s outage, false-stationary fell from **360 m to 4.8 m**
 once a speed-corroboration precondition was added — an IMU-only stillness test cannot
 separate "parked" from "gliding smoothly", and in a blackout nothing corrects it.
+
+---
+
+## 📱 The Android app
+
+`android_logger/` is now a live dead-reckoning HUD, not just a CSV logger. It runs
+`OnDeviceInferenceEngine` on the same samples it records, so the algorithm's belief is on
+screen in real time — previously the engine existed but nothing ever called it.
+
+Built for a phone in a windscreen cradle, at speed, at night:
+
+- **One dominant number** — current position uncertainty in metres, colour-graded
+  green/amber/red, readable at a glance without focusing.
+- **Live track view** (`TrackView.kt`) — the estimated path drawn top-down and auto-scaled.
+  The dead-reckoned section is drawn in amber and the GNSS-tracked section in blue, so
+  divergence is visible as it happens. Plain Canvas, no map SDK: no API key, no network,
+  works in a basement — which is where the system is supposed to earn its keep.
+- **SIMULATE GNSS BLACKOUT** — withholds fixes from the filter while the phone keeps
+  receiving them. This is the demo: press it and watch the track come off the road, release
+  it and see the exit error. No tunnel required.
+- **Motion state in plain words** — "IN VEHICLE — MOVING" / "STATIONARY" / "PHONE HANDLED",
+  each with the reason underneath ("Gravity direction is moving — speed estimate vetoed").
+  Status is carried by text *and* colour, never colour alone.
+- **Sensor chips** — which sensors this specific handset actually has. Absence is a real
+  result on any given phone, so it is shown rather than assumed.
+- Screen kept awake, portrait-locked, dark ground throughout.
 
 ---
 
@@ -220,6 +295,16 @@ Stated plainly, because each one bounds what the numbers above mean.
   relative altitude, but multi-level parking is not yet solved.
 - **Driver coverage is skewed.** Of 23 clean drives, 17 are Driver E and 1 is Driver B;
   Driver D is entirely flagged out. Leave-one-driver-out therefore rests on three groups.
+- **Only 6 drives have usable heading.** The other 17 have a phone that does not track the
+  vehicle in yaw even after lag correction, so the blackout benchmark rests on six drives —
+  five of them from two drivers.
+- **S3c is unexplained.** Its GNSS heading reference disagrees with both the phone gyro and
+  the CAN yaw rate by 267° over the test window, and it is the one drive where fused is
+  worse than naive. Not diagnosed.
+- **The Android UI has never been compiled.** No Android toolchain in this environment. The
+  layout, theme, drawables and Kotlin are written and internally consistent, but the first
+  `./gradlew assembleDebug` may still surface errors. Build it before relying on it
+  for a demo.
 - **Compiled-Kotlin parity is unverified.** No Kotlin toolchain was available. The parity
   test checks feature order, thresholds and the exported model against golden vectors —
   not compiled floating-point output.

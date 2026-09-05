@@ -1,0 +1,12 @@
+{
+  "n_drives": 6,
+  "naive_drift_pct_median": 126.35,
+  "fused_hold_drift_pct_median": 51.3,
+  "fused_ml_drift_pct_median": 65.95,
+  "n_fused_worse_than_naive": 1,
+  "drives_fused_worse": [
+    "S3c"
+  ],
+  "n_meeting_10pct_target": 0,
+  "provenance": "REAL IO-VNBD, 23 clean drives (6 with reliable phone-to-vehicle yaw), speed label = can_indicated, S-/V- lag corrected"
+}

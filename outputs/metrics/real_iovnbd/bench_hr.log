@@ -1,0 +1,22 @@
+REAL IO-VNBD, 23 clean drives (6 with reliable phone-to-vehicle yaw), speed label = can_indicated, S-/V- lag corrected
+6 drives | 90 s blackout
+
+  [1/6] S1         naive= 157.2%  fused(hold)=  65.7%  fused(ml)=  74.4%
+  [2/6] S2#seg0    naive= 241.1%  fused(hold)=  27.8%  fused(ml)=  57.5%
+  [3/6] S3a        naive= 215.0%  fused(hold)=  36.9%  fused(ml)=   4.9%
+  [4/6] S3c        naive=  44.8%  fused(hold)= 132.6%  fused(ml)= 106.1%   <-- FUSED WORSE
+  [5/6] M#seg0     naive=  92.0%  fused(hold)=  32.1%  fused(ml)=  34.8%
+  [6/6] Vw5        naive=  95.5%  fused(hold)=  73.0%  fused(ml)= 122.0%
+
+========================================================================
+BLACKOUT DRIFT = exit error / blackout distance   (median over drives)
+========================================================================
+  naive DR (aligned)       126.3%
+  fused, hold_last          51.3%   <- production
+  fused, ML speed           66.0%
+
+  meets the 10% target:   0 of 6 drives
+  fused WORSE than naive: 1 of 6 drives
+    S3c
+
+wrote C:\Users\souri\OneDrive\Documents\Projects\SIH_dead_reckoning\SIH\outputs\metrics\real_iovnbd

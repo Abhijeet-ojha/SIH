@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material theme is required by MaterialButton and ChipGroup in activity_main.xml.
+         The app was previously on Theme.AppCompat, which crashes those views at inflate. -->
+    <style name="Theme.SensorLogger" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#2563EB</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="android:statusBarColor">#0B1120</item>
+        <item name="android:navigationBarColor">#0B1120</item>
+        <item name="android:windowBackground">#0B1120</item>
+    </style>
+</resources>

@@ -41,10 +41,18 @@ def blackout_window(df):
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--heading-reliable-only", action="store_true",
+                    help="restrict to drives where the phone actually tracked the vehicle "
+                         "in yaw (sync correlation >= 0.55 after lag correction)")
+    args = ap.parse_args()
+
     os.makedirs(OUT_DIR, exist_ok=True)
     bundle = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
     suite = load_benchmark_suite(max_samples_per_drive=6000)
-    drives = suite["clean"]
+    drives = suite["heading_reliable"] if args.heading_reliable_only else suite["clean"]
+    tag = "_heading_reliable" if args.heading_reliable_only else ""
     print(f"{suite['provenance']}\n{len(drives)} drives | {BLACKOUT_SEC:.0f} s blackout\n")
 
     rows = []
@@ -102,7 +110,7 @@ def main():
               + ("   <-- FUSED WORSE" if row["fused_worse_than_naive"] else ""))
 
     out = pd.DataFrame(rows)
-    out.to_csv(os.path.join(OUT_DIR, "benchmark_real.csv"), index=False)
+    out.to_csv(os.path.join(OUT_DIR, f"benchmark_real{tag}.csv"), index=False)
 
     worse = out[out["fused_worse_than_naive"]]
     summary = {
@@ -116,7 +124,7 @@ def main():
         "n_meeting_10pct_target": int((out["fused_hold_drift_pct"] < 10.0).sum()),
         "provenance": suite["provenance"],
     }
-    with open(os.path.join(OUT_DIR, "benchmark_summary.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(OUT_DIR, f"benchmark_summary{tag}.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2)
 
     print("\n" + "=" * 72)

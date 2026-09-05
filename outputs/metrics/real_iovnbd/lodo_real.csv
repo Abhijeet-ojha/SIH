@@ -1,4 +1,4 @@
 holdout_driver,train_windows,test_windows,mae,r2,constant_baseline_mae,beats_constant
-A,14515,5744,5.0065,-0.4509,6.9035,True
-B,19061,1198,4.3257,0.5206,6.572,True
-E,6942,13317,7.0418,-0.0782,8.4248,True
+A,14356,5734,4.3725,-0.1561,6.9411,True
+B,18892,1198,4.3194,0.507,6.5538,True
+E,6932,13158,6.9732,-0.0977,8.4467,True

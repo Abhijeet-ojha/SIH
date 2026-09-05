@@ -60,6 +60,9 @@ MIN_MEAN_SPEED_MPS = 1.0
 # went. Flagged, not silently accepted.
 MAX_SPEED_INTEGRAL_ERROR = 0.03
 
+# GNSS course over ground is meaningless below walking pace; below this it is held.
+HEADING_VALID_MIN_SPEED = 2.0   # m/s
+
 
 def _canon(col: str) -> str:
     """
@@ -152,11 +155,6 @@ class IOVNBDDrive:
         lon = _resolve(v, "LONGITUDE", f"{self.name} V-")
         self.lat0, self.lon0 = float(lat[0]), float(lon[0])
         out["pos_x"], out["pos_y"] = geodetic_to_enu(lat, lon, self.lat0, self.lon0)
-        # V- heading is a clockwise-from-north azimuth in degrees, matching the ENU
-        # convention used by the EKF (x = East = v*sin(psi), y = North = v*cos(psi)).
-        out["heading"] = (np.deg2rad(_resolve(v, "HEADING", f"{self.name} V-")) + np.pi) \
-            % (2 * np.pi) - np.pi
-
         # ── Speed label ──────────────────────────────────────────────────────
         can_kmh = _resolve(v, "INDICATED VEHICLE SPEED", f"{self.name} V-")
         wheel_cols = [c for c in v.columns if "WHEEL SPEED" in _canon(c)]
@@ -178,16 +176,54 @@ class IOVNBDDrive:
             raise ValueError(f"unknown speed_source {speed_source!r}, pick from {list(sources)}")
         out["speed"] = out[sources[speed_source]].values
 
+        # V- heading is a clockwise-from-north azimuth in degrees, matching the ENU
+        # convention used by the EKF (x = East = v*sin(psi), y = North = v*cos(psi)).
+        #
+        # But GNSS heading is course-over-ground, and course over ground is undefined when
+        # you are not going anywhere: at a standstill it is pure noise that swings through
+        # the full circle. Taken raw it made S3c appear to rotate 267 degrees during a 90 s
+        # window in which the phone gyro and the CAN yaw rate agreed to within 4.2 degrees.
+        # Using it as a heading reference was injecting that noise straight into the EKF.
+        # Hold the last heading measured while genuinely moving instead.
+        raw_hdg = (np.deg2rad(_resolve(v, "HEADING", f"{self.name} V-")) + np.pi) \
+            % (2 * np.pi) - np.pi
+        spd_for_hdg = can_kmh / 3.6
+        moving = spd_for_hdg > HEADING_VALID_MIN_SPEED
+        hdg = raw_hdg.copy()
+        if moving.any():
+            last = raw_hdg[np.argmax(moving)]
+            for i in range(len(hdg)):
+                if moving[i]:
+                    last = raw_hdg[i]
+                hdg[i] = last
+        out["heading"] = hdg
+        out["heading_valid"] = moving
+        self.heading_valid_fraction = float(np.mean(moving))
+
         # ── Phone IMU ────────────────────────────────────────────────────────
         out["acc_x"] = _resolve(s, "ACCELEROMETER X", f"{self.name} S-")
         out["acc_y"] = _resolve(s, "ACCELEROMETER Y", f"{self.name} S-")
         out["acc_z"] = _resolve(s, "ACCELEROMETER Z", f"{self.name} S-")
 
-        # Gyroscope is published as Yaw/Pitch/Roll, not X/Y/Z. Body-axis convention:
-        # roll about x, pitch about y, yaw about z.
+        # Gyroscope axis order does NOT match the accelerometer/gravity axis order.
+        #
+        # Accelerometer and GRAVITY both put vertical on Z (GRAVITY Z ~ 9.806, X and Y
+        # within +/-0.2). The gyroscope does not: on every drive tested, the channel
+        # labelled "Pitch" is the one carrying vehicle yaw. Correlations against the CAN
+        # bus yaw rate, after per-drive lag correction:
+        #
+        #   S3a 0.974   S3c 0.996   S1 0.948   M 0.778   (channel: Pitch, every time)
+        #
+        # while the channel labelled "Yaw" correlates 0.000. Magnitudes agree too: CAN yaw
+        # p99 = 0.5428 rad/s, "Pitch" p99 = 0.5504, "Yaw" p99 = 0.1072.
+        #
+        # So vertical is mapped by measurement, not by column name. Only two gyro-derived
+        # quantities are used downstream - the component along gravity (yaw rate) and the
+        # vector magnitude - and the magnitude is permutation-invariant, so getting the
+        # vertical axis right is sufficient; the remaining two axes keep their labels.
         out["gyro_x"] = _resolve(s, "GYROSCOPE ROLL", f"{self.name} S-")
-        out["gyro_y"] = _resolve(s, "GYROSCOPE PITCH", f"{self.name} S-")
-        out["gyro_z"] = _resolve(s, "GYROSCOPE YAW", f"{self.name} S-")
+        out["gyro_y"] = _resolve(s, "GYROSCOPE YAW", f"{self.name} S-")
+        out["gyro_z"] = _resolve(s, "GYROSCOPE PITCH", f"{self.name} S-")
 
         # A real gravity channel, so frame alignment need not low-pass for it. Note its
         # per-axis std here is ~0.01 m/s^2: the phone was rigidly pre-aligned to the
@@ -318,6 +354,9 @@ class IOVNBDDrive:
             "path_length_m": round(self.path_length_m, 1),
             "speed_integral_err": round(self.speed_integral_error, 4),
             "n_gaps": self.n_gaps,
+            "sv_lag_s": round(getattr(self, "sv_lag_samples", 0) * 0.1, 1),
+            "sync_corr": round(getattr(self, "sv_sync_correlation", float("nan")), 3),
+            "heading_reliable": getattr(self, "heading_reliable", None),
             "gravity_axis_std": [round(x, 5) for x in self.gravity_axis_std],
             "flags": len(self.quality_flags),
             "hash": self.integrity_hash,
@@ -359,6 +398,52 @@ def discover_pairs(root: Optional[str] = None) -> List[Dict[str, str]]:
     return sorted(found, key=lambda d: (d["driver"], d["stem"]))
 
 
+MAX_LAG_SAMPLES = 400          # +/- 40 s at 10 Hz
+MIN_SYNC_CORRELATION = 0.55    # below this the phone is not rigidly tracking the vehicle
+
+
+def estimate_sv_lag(gyro_vertical: np.ndarray, can_yaw_rate: np.ndarray,
+                    max_lag: int = MAX_LAG_SAMPLES) -> Tuple[int, float]:
+    """
+    Estimate the sample offset between the S- (phone) and V- (vehicle) files.
+
+    THE FILES ARE NOT ACTUALLY SYNCHRONISED, despite the directory being named
+    "Synchronised V abd S datasets". Cross-correlating the phone's vertical gyro against
+    the CAN bus yaw rate - the same physical quantity measured by two instruments - shows
+    offsets from -8.8 s to +6.7 s depending on the drive. On S3a the correlation is 0.200
+    at zero lag and 0.974 at 67 samples.
+
+    This is the defect underneath everything else. Training paired IMU windows with speed
+    labels from several seconds later, which is why held-out R2 was negative; and it
+    corrupted heading, which the speed-source ablation identified as the dominant error
+    term. Nothing downstream can be fixed while the inputs and labels disagree about when.
+
+    Returns (lag_samples, correlation_at_that_lag). Positive lag means the phone stream
+    trails the vehicle stream and must be advanced.
+    """
+    a = np.asarray(gyro_vertical, dtype=float)
+    b = np.asarray(can_yaw_rate, dtype=float)
+    n = min(len(a), len(b))
+    a, b = a[:n], b[:n]
+    max_lag = int(min(max_lag, n // 4))
+
+    def corr(lag: int) -> float:
+        if lag > 0:
+            x, y = a[lag:], b[:-lag]
+        elif lag < 0:
+            x, y = a[:lag], b[-lag:]
+        else:
+            x, y = a, b
+        m = np.isfinite(x) & np.isfinite(y)
+        if m.sum() < 100 or np.std(x[m]) < 1e-9 or np.std(y[m]) < 1e-9:
+            return 0.0
+        return float(np.corrcoef(x[m], y[m])[0, 1])
+
+    lags = range(-max_lag, max_lag + 1)
+    best = max(lags, key=lambda L: abs(corr(L)))
+    return best, corr(best)
+
+
 def contiguous_segments(t_sec: np.ndarray, min_len: int = 600,
                         max_gap_sec: float = 3.0) -> List[Tuple[int, int]]:
     """
@@ -379,15 +464,30 @@ def contiguous_segments(t_sec: np.ndarray, min_len: int = 600,
 
 def load_pair(pair: Dict[str, str], max_samples: Optional[int] = None, offset: int = 0,
               speed_source: str = "can_indicated", segment: int = 0,
-              min_segment_len: int = 600, strict: bool = True) -> IOVNBDDrive:
+              min_segment_len: int = 600, strict: bool = True,
+              correct_lag: bool = True) -> IOVNBDDrive:
     """
-    Load one synchronised pair. `segment` selects among contiguous recording sessions
-    (0 = longest). Use `segments_available()` to see how many a drive has.
+    Load one pair. `segment` selects among contiguous recording sessions (0 = longest).
+
+    correct_lag re-aligns the phone stream against the vehicle stream by cross-correlating
+    the vertical gyro with the CAN yaw rate. Leave it on: the published files are NOT
+    synchronised (see estimate_sv_lag), and training on misaligned pairs is what produced
+    negative held-out R2.
     """
     s = pd.read_csv(pair["s_path"], encoding="latin-1", low_memory=False)
     v = pd.read_csv(pair["v_path"], encoding="latin-1", low_memory=False)
     n = min(len(s), len(v))
     s, v = s.iloc[:n].reset_index(drop=True), v.iloc[:n].reset_index(drop=True)
+
+    lag, sync_corr = 0, float("nan")
+    if correct_lag:
+        gv = _resolve(s, "GYROSCOPE PITCH", f"{pair['stem']} S-")   # vertical axis
+        cy = np.deg2rad(_resolve(v, "YAW RATE", f"{pair['stem']} V-"))
+        lag, sync_corr = estimate_sv_lag(gv, cy)
+        if lag > 0:
+            s, v = s.iloc[lag:].reset_index(drop=True), v.iloc[:-lag].reset_index(drop=True)
+        elif lag < 0:
+            s, v = s.iloc[:lag].reset_index(drop=True), v.iloc[-lag:].reset_index(drop=True)
 
     t = _resolve(s, "TIME SINCE START", f"{pair['stem']} S-") / 1000.0
     segs = contiguous_segments(t, min_len=min_segment_len)
@@ -412,6 +512,15 @@ def load_pair(pair: Dict[str, str], max_samples: Optional[int] = None, offset: i
                         name=name, driver_id=pair["driver"], speed_source=speed_source,
                         strict=strict)
     drive.n_segments_in_file = len(segs)
+    drive.sv_lag_samples = int(lag)
+    drive.sv_sync_correlation = float(sync_corr)
+    # A phone that does not track the vehicle even after lag correction was not rigidly
+    # mounted for that drive. That makes its HEADING unusable, but not its speed: the
+    # vibration-to-speed relationship does not depend on the yaw axis lining up. So this is
+    # recorded as a separate property rather than a blanket quality flag - excluding these
+    # drives from speed training would throw away most of the dataset for the wrong reason.
+    drive.heading_reliable = bool(np.isfinite(sync_corr)
+                                  and abs(sync_corr) >= MIN_SYNC_CORRELATION)
     return drive
 
 
@@ -424,7 +533,8 @@ def segments_available(pair: Dict[str, str], min_segment_len: int = 600) -> int:
 
 def load_benchmark_suite(max_samples_per_drive: int = 12000,
                          speed_source: str = "can_indicated",
-                         include_flagged: bool = False) -> Dict[str, object]:
+                         include_flagged: bool = False,
+                         heading_reliable_only: bool = False) -> Dict[str, object]:
     """
     Every usable real drive, with the quality gates applied.
 
@@ -446,14 +556,19 @@ def load_benchmark_suite(max_samples_per_drive: int = 12000,
         (flagged if d.quality_flags else clean).append(d)
 
     drives = clean + (flagged if include_flagged else [])
+    heading_ok = [d for d in drives if getattr(d, "heading_reliable", False)]
+    if heading_reliable_only:
+        drives = heading_ok
     return {
         "drives": drives,
         "clean": clean,
         "flagged": flagged,
         "unusable": unusable,
+        "heading_reliable": heading_ok,
         "speed_source": speed_source,
-        "provenance": f"REAL IO-VNBD, {len(clean)} clean drives, "
-                      f"speed label = {speed_source}",
+        "provenance": (f"REAL IO-VNBD, {len(clean)} clean drives "
+                       f"({len(heading_ok)} with reliable phone-to-vehicle yaw), "
+                       f"speed label = {speed_source}, S-/V- lag corrected"),
     }
 
 

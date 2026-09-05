@@ -1,0 +1,58 @@
+
+REAL IO-VNBD, 23 clean drives (6 with reliable phone-to-vehicle yaw), speed label = can_indicated, S-/V- lag corrected
+clean=23  flagged=6  unusable=3
+total 167.8 min of real driving
+
+[features] extracting (frame-invariant set)
+  [1/23] S1           driver A    1198 windows   11.9s
+  [2/23] S2#seg0      driver A    1198 windows   15.6s
+  [3/23] S3a          driver A    1198 windows   12.5s
+  [4/23] S3b#seg0     driver A     942 windows    9.5s
+  [5/23] S3c          driver A    1198 windows   11.9s
+  [6/23] M#seg0       driver B    1198 windows   11.8s
+  [7/23] Vfa01        driver E    1198 windows   12.1s
+  [8/23] Vfa02        driver E    1198 windows   12.1s
+  [9/23] Vta1a        driver E    1198 windows   11.7s
+  [10/23] Vw10         driver E     128 windows    1.3s
+  [11/23] Vw11         driver E     976 windows    9.4s
+  [12/23] Vw12         driver E     144 windows    1.4s
+  [13/23] Vw14a        driver E     612 windows    6.0s
+  [14/23] Vw14b        driver E    1198 windows   11.5s
+  [15/23] Vw14c        driver E    1198 windows   11.4s
+  [16/23] Vw16a        driver E    1153 windows   11.3s
+  [17/23] Vw2          driver E    1198 windows   11.8s
+  [18/23] Vw3          driver E     769 windows    7.3s
+  [19/23] Vw4          driver E    1198 windows   11.8s
+  [20/23] Vw5          driver E     194 windows    1.8s
+  [21/23] Vw6          driver E     252 windows    2.4s
+  [22/23] Vw7          driver E     248 windows    2.4s
+  [23/23] Vw8          driver E     296 windows    2.8s
+[features] 20090 windows x 201 features -> C:\Users\souri\OneDrive\Documents\Projects\SIH_dead_reckoning\SIH\outputs\cache_real_features.npz
+
+label: CAN indicated vehicle speed | mean 12.88 m/s, max 31.98 m/s, 9.7% stationary
+
+========================================================================
+LEAVE-ONE-DRIVER-OUT (the only split that tests generalisation)
+========================================================================
+  driver A: MAE  4.37 m/s | R2 -0.156 | constant-baseline MAE  6.94 -> beats constant
+  driver B: MAE  4.32 m/s | R2  0.507 | constant-baseline MAE  6.55 -> beats constant
+  driver E: MAE  6.97 m/s | R2 -0.098 | constant-baseline MAE  8.45 -> beats constant
+
+[final] fitting on all clean drives
+[final] saved C:\Users\souri\OneDrive\Documents\Projects\SIH_dead_reckoning\SIH\outputs\models\speed_regressor_real.joblib (7.8 MB)
+
+top features:
+   0.2128  a_vert_p2p
+   0.2117  a_vert_std
+   0.0971  alpha_yaw_spec_centroid
+   0.0442  alpha_yaw_std
+   0.0397  yaw_rate_spec_centroid
+   0.0292  yaw_rate_rms
+   0.0195  jerk_vert_rms
+   0.0130  alpha_yaw_rms
+   0.0118  jerk_vert_std
+   0.0106  alpha_yaw_p2p
+   0.0077  jerk_fwd_std
+   0.0071  grav_stab_max
+
+wrote C:\Users\souri\OneDrive\Documents\Projects\SIH_dead_reckoning\SIH\outputs\metrics\real_iovnbd

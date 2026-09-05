@@ -1,40 +1,294 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!--
+  Driving HUD. Design constraints that drove every choice here:
+    * read at a glance, from a cradle, in a moving car - so one dominant number, huge
+    * status by colour AND text, never colour alone (glare, colour-blindness)
+    * thumb-reachable primary control at the bottom
+    * dark ground, because this runs at night and in tunnels
+-->
+<androidx.core.widget.NestedScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:gravity="center"
-    android:padding="24dp"
-    android:background="#0F172A">
+    android:background="#0B1120"
+    android:fillViewport="true">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="SIH PS 168\nReal-Time Sensor Logger"
-        android:textAlignment="center"
-        android:textColor="#F8FAFC"
-        android:textSize="22sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="24dp" />
-
-    <TextView
-        android:id="@+id/statusText"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Ready to record. Mount phone securely."
-        android:textColor="#94A3B8"
-        android:textSize="14sp"
-        android:gravity="center"
-        android:layout_marginBottom="32dp" />
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <Button
-        android:id="@+id/logButton"
-        android:layout_width="match_parent"
-        android:layout_height="64dp"
-        android:text="START LOGGING"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:backgroundTint="#2563EB"
-        android:textColor="#FFFFFF" />
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="12dp">
 
-</LinearLayout>
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="DEAD RECKONING"
+                android:textColor="#F8FAFC"
+                android:textSize="16sp"
+                android:letterSpacing="0.12"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/gnssBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="GNSS OK"
+                android:textColor="#052E16"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.08"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:paddingTop="5dp"
+                android:paddingBottom="5dp"
+                android:background="@drawable/badge_good" />
+        </LinearLayout>
+
+        <!-- Primary readout: position uncertainty -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="@drawable/card"
+            android:padding="20dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="POSITION UNCERTAINTY"
+                android:textColor="#64748B"
+                android:textSize="11sp"
+                android:letterSpacing="0.14" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="bottom"
+                android:paddingTop="2dp">
+
+                <TextView
+                    android:id="@+id/uncertaintyValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0.0"
+                    android:textColor="#F8FAFC"
+                    android:textSize="68sp"
+                    android:textStyle="bold"
+                    android:fontFamily="sans-serif-medium"
+                    android:includeFontPadding="false" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="m"
+                    android:textColor="#64748B"
+                    android:textSize="24sp"
+                    android:paddingStart="6dp"
+                    android:paddingBottom="10dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/uncertaintyHint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="tracking satellites"
+                android:textColor="#94A3B8"
+                android:textSize="13sp"
+                android:paddingTop="2dp" />
+        </LinearLayout>
+
+        <!-- Motion state: what the gate believes, in plain words -->
+        <TextView
+            android:id="@+id/motionState"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="STATIONARY"
+            android:textColor="#F8FAFC"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:gravity="center"
+            android:padding="14dp"
+            android:background="@drawable/card" />
+
+        <TextView
+            android:id="@+id/motionReason"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Mount the phone, then start."
+            android:textColor="#64748B"
+            android:textSize="12sp"
+            android:gravity="center"
+            android:paddingTop="6dp"
+            android:paddingBottom="4dp" />
+
+        <!-- Live kinematics -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="8dp"
+            android:baselineAligned="false">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="@drawable/card"
+                android:padding="14dp"
+                android:layout_marginEnd="5dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="SPEED"
+                    android:textColor="#64748B"
+                    android:textSize="10sp"
+                    android:letterSpacing="0.12" />
+
+                <TextView
+                    android:id="@+id/speedValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textColor="#38BDF8"
+                    android:textSize="30sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="km/h"
+                    android:textColor="#64748B"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="@drawable/card"
+                android:padding="14dp"
+                android:layout_marginStart="5dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="HEADING"
+                    android:textColor="#64748B"
+                    android:textSize="10sp"
+                    android:letterSpacing="0.12" />
+
+                <TextView
+                    android:id="@+id/headingValue"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textColor="#A78BFA"
+                    android:textSize="30sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/headingCardinal"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="N"
+                    android:textColor="#64748B"
+                    android:textSize="10sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Dead-reckoned track, drawn live -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="TRACK"
+            android:textColor="#64748B"
+            android:textSize="10sp"
+            android:letterSpacing="0.14"
+            android:paddingTop="14dp"
+            android:paddingBottom="6dp" />
+
+        <com.sih.sensorlogger.TrackView
+            android:id="@+id/trackView"
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:background="@drawable/card" />
+
+        <!-- Sensor availability. Which sensors are actually present is a real finding on
+             any given handset, so it is surfaced rather than assumed. -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="SENSORS"
+            android:textColor="#64748B"
+            android:textSize="10sp"
+            android:letterSpacing="0.14"
+            android:paddingTop="16dp"
+            android:paddingBottom="6dp" />
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/sensorChips"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:chipSpacingVertical="0dp"
+            app:singleLine="false" />
+
+        <!-- Recording stats -->
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Ready. Mount the phone securely before starting."
+            android:textColor="#64748B"
+            android:textSize="12sp"
+            android:gravity="center"
+            android:paddingTop="16dp"
+            android:paddingBottom="12dp" />
+
+        <!-- Primary control, thumb-reachable -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/logButton"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="START"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:backgroundTint="#2563EB"
+            android:textColor="#FFFFFF"
+            app:cornerRadius="16dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/blackoutButton"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="8dp"
+            android:text="SIMULATE GNSS BLACKOUT"
+            android:textSize="13sp"
+            android:textColor="#F59E0B"
+            android:letterSpacing="0.06"
+            app:strokeColor="#F59E0B"
+            app:cornerRadius="14dp" />
+
+    </LinearLayout>
+</androidx.core.widget.NestedScrollView>
