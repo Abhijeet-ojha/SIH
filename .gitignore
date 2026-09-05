@@ -11,8 +11,12 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root. Unanchored "lib/" matches at ANY depth, which silently
+# swallowed flutter_app/lib/ - the entire Flutter application source. It has never been
+# committed on any branch; the only copy is on the machine that built the APK.
+# These rules exist for Python virtualenvs, which only ever appear at the root.
+/lib/
+/lib64/
 parts/
 sdist/
 var/
