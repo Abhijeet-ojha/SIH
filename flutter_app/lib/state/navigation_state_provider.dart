@@ -11,6 +11,7 @@ import '../analytics/session_recorder.dart';
 import '../localization/ekf_fusion_engine.dart';
 import '../localization/frame_alignment.dart';
 import '../localization/motion_gate.dart';
+import '../localization/online_calibration.dart';
 import '../localization/speed_model.dart';
 import '../models/sensor_quality.dart';
 import '../models/session_data.dart';
@@ -38,6 +39,10 @@ class NavigationStateProvider extends ChangeNotifier {
   final SensorCalibrator calibrator = SensorCalibrator();
   final SensorQualityEngine quality = SensorQualityEngine();
   final SessionRecorder recorder = SessionRecorder();
+
+  /// Learns this phone and this car while GPS is visible; spends it in the tunnel.
+  final OnlineCalibration calibration = OnlineCalibration();
+  final CalibrationStore calibrationStore = InMemoryCalibrationStore();
   EkfFusionEngine6State ekf = EkfFusionEngine6State();
 
   StreamSubscription? _accelSub, _gyroSub, _magSub, _gpsSub;
@@ -171,6 +176,9 @@ class NavigationStateProvider extends ChangeNotifier {
     _rotationLive = false;
     _rotationMs = 0;
 
+    final saved = calibrationStore.load();
+    if (saved != null) calibration.loadJson(saved);
+
     recorder.startRecording(
         sessionName:
             'DRIVE_${DateTime.now().toIso8601String().substring(0, 19)}');
@@ -233,6 +241,7 @@ class NavigationStateProvider extends ChangeNotifier {
     await _gyroSub?.cancel();
     await _magSub?.cancel();
     await _gpsSub?.cancel();
+    calibrationStore.save(calibration.toJson());
     final q = qualityReport;
     recorder.stopRecording(
         accelHz: q?.accel.actualHz ?? 0.0, gyroHz: q?.gyro.actualHz ?? 0.0);
@@ -309,6 +318,22 @@ class NavigationStateProvider extends ChangeNotifier {
     gate.update(frame,
         dt: dt, gnssAvailable: gnssAvailable, speedHint: ekf.speed);
 
+    // ── LEARN, only while satellites can mark our work ────────────────────
+    // Bias needs no GPS - a gyro at rest reveals it directly - so this keeps working at a
+    // red light in a city canyon where no fix is available.
+    if (gate.state == MotionState.stationary) {
+      calibration.observeStationary(frame.compassYawRate, dt);
+    } else if (gnssAvailable && hasFix) {
+      calibration.observeMovingWithGnss(
+        compassYawRate: frame.compassYawRate,
+        dt: dt,
+        gnssSpeed: gnssSpeed,
+        gnssAccuracy: gnssAccuracy,
+        courseRad: gnssHeading,
+        mountDisturbed: frame.mountDisturbed,
+      );
+    }
+
     // Model runs only when the gate agrees we are in a moving vehicle.
     if (modelLoaded &&
         window.isReady &&
@@ -318,12 +343,29 @@ class NavigationStateProvider extends ChangeNotifier {
       mlSpeed = 0.0;
     }
 
+    // ── LEARN the speed correction, then APPLY it ────────────────────────
+    // Score the RAW model output against GPS, before correcting it - fitting a correction
+    // against its own corrected output would chase its own tail.
+    final rawModelSpeed = mlSpeed;
+    if (gnssAvailable && hasFix && gate.state == MotionState.inVehicleMoving) {
+      calibration.observeSpeed(
+        modelSpeed: rawModelSpeed,
+        gnssSpeed: gnssSpeed,
+        gnssAccuracy: gnssAccuracy,
+        mountDisturbed: frame.mountDisturbed,
+      );
+    }
+    // Per-vehicle gain and offset. Blended by confidence inside OnlineCalibration, so
+    // before anything is learned this is the identity and behaviour is unchanged.
+    mlSpeed = calibration.correctSpeed(rawModelSpeed);
+
     // Sigma is the model's MEASURED error, not a hopeful constant. Telling the filter a
-    // source is better than it is makes the filter follow it off the road.
+    // source is better than it is makes the filter follow it off the road. Once this
+    // device has enough evidence, its own measured residual replaces the global figure.
     mlUncertainty = switch (gate.state) {
       MotionState.stationary => 0.04,
       MotionState.phoneHandled => 20.0,
-      MotionState.inVehicleMoving => SpeedModel.measuredBlackoutRmse,
+      MotionState.inVehicleMoving => calibration.speedSigma,
     };
 
     final stationary = gate.state != MotionState.inVehicleMoving;
@@ -336,7 +378,9 @@ class NavigationStateProvider extends ChangeNotifier {
       dt: dt,
       vAi: vAi,
       vAiStd: mlUncertainty,
-      gyroZ: frame.compassYawRate,
+      // The payload of everything learned above: bias removed, scale applied. During a
+      // blackout this is the only thing between the gyro's own error and the heading.
+      gyroZ: calibration.correctYawRate(frame.compassYawRate),
       isStationary: stationary,
     );
     ekf.updateNhc();

@@ -346,6 +346,53 @@ class AnalyticsPanel extends StatelessWidget {
           _stage('ZUPT', ekf.isZuptFused),
           _stage('GNSS update', ekf.isGnssFused, last: true),
         ]),
+        // What the app has learned about THIS phone in THIS car while GPS was up. Shown
+        // with its evidence, because a calibration number without provenance is not worth
+        // trusting - and because watching it converge is the demo.
+        _Section('Learned from this drive', [
+          _Row('Gyro bias',
+              '${(nav.calibration.yawBias * 180 / 3.14159265).toStringAsFixed(3)}°/s',
+              valueColour: nav.calibration.yawBiasConfidence > 0.5
+                  ? NavTheme.good
+                  : NavTheme.secondaryLabel),
+          _Row('  from stationary time',
+              '${nav.calibration.stationarySeconds.toStringAsFixed(0)} s · '
+              '${(nav.calibration.yawBiasConfidence * 100).round()}% confident'),
+          _Row('Gyro scale', '${nav.calibration.yawScale.toStringAsFixed(4)}×',
+              valueColour: nav.calibration.yawScaleConfidence > 0.5
+                  ? NavTheme.good
+                  : NavTheme.secondaryLabel),
+          _Row('  from GPS-scored turns',
+              '${nav.calibration.headingWindows} windows · '
+              '${(nav.calibration.yawScaleConfidence * 100).round()}% confident'),
+          _Row('Speed correction',
+              '×${nav.calibration.speedGain.toStringAsFixed(2)}'
+              '${nav.calibration.speedOffset >= 0 ? '+' : ''}'
+              '${nav.calibration.speedOffset.toStringAsFixed(2)}',
+              valueColour: nav.calibration.speedConfidence > 0.5
+                  ? NavTheme.good
+                  : NavTheme.secondaryLabel),
+          _Row('  from GPS-scored samples',
+              '${nav.calibration.speedSamples} · '
+              '${(nav.calibration.speedConfidence * 100).round()}% confident'),
+          _Row('Speed error it now expects',
+              '±${nav.calibration.speedSigma.toStringAsFixed(2)} m/s',
+              last: true),
+        ]),
+        const SizedBox(height: 10),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            nav.calibration.hasLearnedAnything
+                ? 'Learned while satellites were visible and applied the moment they are '
+                    'not. Nothing here was learned from our own estimate — only from GPS '
+                    'and from standing still — so it cannot drift into believing itself.'
+                : 'Drive with a GPS fix and this fills in. Until it does, every correction '
+                    'is the identity, so an uncalibrated phone behaves exactly as before.',
+            style: const TextStyle(
+                fontSize: 11, color: NavTheme.tertiaryLabel, height: 1.4),
+          ),
+        ),
         _Section('Model', [
           _Row('Loaded', nav.modelLoaded ? 'yes' : 'no',
               valueColour: nav.modelLoaded ? NavTheme.good : NavTheme.bad),

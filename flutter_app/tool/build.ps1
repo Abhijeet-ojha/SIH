@@ -58,11 +58,16 @@ function Sync-Source {
 function Invoke-Flutter {
     param([string[]]$FlutterArgs)
     Push-Location $Build
+    # flutter writes progress and its "N issues found" summary to stderr. With
+    # $ErrorActionPreference='Stop' the native-command wrapper turns those into terminating
+    # errors and the script dies on perfectly normal output, so it is relaxed just here.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         Write-Host "[flutter] $($FlutterArgs -join ' ')" -ForegroundColor Cyan
         & $Flutter @FlutterArgs | ForEach-Object { Write-Host $_ }
         return $LASTEXITCODE
-    } finally { Pop-Location }
+    } finally { $ErrorActionPreference = $prev; Pop-Location }
 }
 
 Sync-Source
@@ -75,7 +80,10 @@ if ($Task -eq 'analyze' -or $Task -eq 'all') {
     # line in an ErrorRecord and trips $ErrorActionPreference='Stop', so the script would
     # abort on lint output. flutter writes its findings to stdout anyway.
     Push-Location $Build
-    $out = & $Flutter analyze | Out-String
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $out = & $Flutter analyze 2>&1 | Out-String
+    $ErrorActionPreference = $prev
     Pop-Location
     Write-Host $out
     if ($out -match '^\s*error\s-' -or $out -match 'error •') { $failed += 'analyze' }
