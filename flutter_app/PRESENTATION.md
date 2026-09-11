@@ -1,45 +1,124 @@
-# NavPulse indoor walking prototype (2.1.0)
+# NavPulse — demo script (round 2)
 
-## Install and demonstrate on the OnePlus Nord CE 3
+Install `outputs/apk/navpulse.apk`. Same app ID and signing key as before, higher version
+code, so it installs as an update.
 
-Use the NEW `outputs/apk/navpulse-indoor-walk.apk`, not the previous vehicle APK.
-It has the same app ID/signing key and a higher version code, so install it as an update.
+Build it yourself with `.\tool\build.ps1 all` (analyze + test + apk). That script exists
+because OneDrive holds file handles on `build\` and Flutter cannot clean in place — it
+mirrors the source to a build copy outside OneDrive and runs there. Building the repo
+directory directly fails with *"Flutter failed to delete a directory at
+build\unit_test_assets"*.
 
-1. Turn on airplane mode. Turn Wi-Fi and Bluetooth off as well if they remain enabled. Phone Location can be off.
-2. Open NavPulse Localizer. The status must say INDOOR WALK / READY, not SEARCHING.
-3. Hold the phone screen-up at waist height, with its top edge pointing forward. Face the direction you will first walk.
-4. Tap green Play. Hold still for two seconds while the step detector warms up.
-5. Walk 8-10 normal steps forward. Step count, estimated distance and the amber trail update from actual accelerometer readings.
-6. Turn your body AND phone together through 90 degrees, then walk another 8-10 steps. The trail should turn.
-7. Stop walking. Speed drops to zero in about 1.4 seconds. Position only advances on detected steps.
-8. Tap Stop, then Sessions to inspect the recorded session. Play again resets the relative origin and heading.
+---
 
-The map's START point is your physical starting point, represented as local (0,0). No GNSS fix, network or location permission is requested in indoor mode. No prerecorded animation or vehicle ML estimate drives this path.
+## The 90-second demo
 
-## If the step count stays at zero
+The app opens on **INDOOR WALK**. The mode selector is the first thing on screen; both
+options are always visible and say what they mean.
 
-Open Pipeline and check the accelerometer rate and step signal. Around 50 Hz is requested, though the actual phone rate can differ. A zero rate or an error indicates the sensor stream is unavailable. If readings are live but gentle steps are missed, Stop, open Navigate, lower the step threshold from 0.6 to 0.4 and restart. Avoid deliberately shaking the phone: repeated hand oscillations can cause false steps. Keep the phone facing the walking direction, not turning it independently to show someone the screen.
+### Beat 1 — it works with the radios off (30 s)
 
-Adjust step length while stopped: the default is 0.65 m. Measure a known walking distance and divide by the detected step count to choose a better length for the presenter.
+1. Airplane mode on. Location can be off entirely.
+2. Open NavPulse. Status reads **INDOOR WALK / READY**.
+3. Hold the phone flat, top edge forward, facing the way you will walk.
+4. Press the green **START** pill. Hold still two seconds.
+5. Walk 8–10 normal steps. Steps, distance and the trail update from the accelerometer.
+6. Turn your body **and phone together** 90°, walk 8–10 more. The trail turns.
 
-## What to tell the jury
+Point at the legend: the trail is drawn from sensors alone. No fix, no network, no
+permission was requested.
 
-This is pedestrian dead reckoning: step detection + relative heading + calibrated step length. Airplane mode does not supply location; local motion sensors supply the measurements. It estimates a relative path, not an absolute indoor latitude/longitude or a floor plan. The displayed drift allowance is a heuristic, not measured accuracy. Indoor magnetic disturbances are avoided when Android's game rotation sensor is available; a rotation-vector or gyro fallback is used otherwise. Carry orientation changes, missed steps and heading drift affect the estimate.
+### Beat 2 — the tilt test (20 s) ← *lead with this if a judge is sceptical*
 
-The original vehicle pipeline is still available by turning off Indoor walking while stopped. Its data/model accuracy measurements do not validate the new pedestrian mode. Sessions are kept in memory and are lost when the app process closes. Keep the app foregrounded for this demo.
+Hand the judge the phone while it is running and ask them to **slant or twist it**.
 
-## Build and recovery
+The heading does not move, and a banner appears: **HEADING HELD — phone moved, not the
+vehicle**, with a live trust percentage.
 
-Flutter 3.24.5, Java 17, Android SDK 34 are installed under `C:/Users/souri/navpulse-build-tools`.
-Build copy outside OneDrive: `C:/Users/souri/navpulse-build-tools/indoor-build`.
-Canonical source remains in this repository's `flutter_app`; sync changes to the build copy before rebuilding.
+What to say: *"A gyroscope cannot tell whether the phone turned or the car turned — it sees
+one rotation either way. We separate them physically. A car turning on a road rotates about
+the vertical and essentially nothing else; a hand rotates the phone about a horizontal axis.
+We measured it: a real turn shows 0.00 rad/s of off-vertical rate, a hand slant shows 0.44.
+So we believe yaw in proportion to how still the mounting is."*
+
+The numbers behind it, all in `test/tilt_heading_test.dart`:
+
+| Case | Before | After |
+| :--- | ---: | ---: |
+| Realistic hand slant | 7.9° of false turn | < 3° |
+| Re-seating the phone in a cradle | 31.6° | < 5° |
+| Genuine 90°/6 s turn | tracked exactly | still tracked |
+
+### Beat 3 — cut the satellites (40 s, vehicle mode)
+
+1. Stop. Switch the mode selector to **VEHICLE**. Start. Wait for **GNSS LOCKED**.
+2. Drive. The trail is blue while satellites are correcting the filter.
+3. Press **CUT GPS SIGNAL**. The banner turns amber, the trail continues in amber, and the
+   uncertainty figure starts growing on its own.
+4. Press **RESTORE GPS**. The gap between where the system thought it was and the first
+   real fix is the honest error, live, in front of them.
+
+---
+
+## If a judge pushes on accuracy
+
+Do not oversell. The measured result on real IO-VNBD drives is in the repo:
+
+- **51% median blackout drift** (exit error ÷ distance travelled with GPS off) against a
+  10% target, on the 6 drives where the phone genuinely tracked the vehicle.
+- **0 of 6 meet the target.** Fused beats the naive baseline on 5 of 6 (126.3% → 51.3%).
+- The speed model beats a constant on every held-out driver, but R² is still negative on
+  two of three.
+
+The stronger card is the data work, which is defensible and ours:
+
+> *"The published IO-VNBD files are labelled synchronised and are not — the phone and
+> vehicle streams are offset by up to 39 seconds, different per drive. And the gyroscope
+> axis labels are wrong: the channel labelled 'Yaw' has 0.000 correlation with the vehicle
+> turning, while the one labelled 'Pitch' has 0.97. We found both by cross-checking one
+> sensor against another, corrected them, and our heading error went from unusable to
+> 1–7° over 90 seconds."*
+
+That is a result about the dataset everyone in this problem statement is using.
+
+---
+
+## Failure modes, and what to do
+
+| Symptom | Cause | Action |
+| :--- | :--- | :--- |
+| Step count stays 0 | step threshold too high for a gentle gait | Stop → Navigate → lower threshold to 0.4 |
+| Status stuck on SEARCHING | vehicle mode indoors | switch to INDOOR WALK |
+| CUT GPS pill missing | you are in indoor mode | it is hidden by design — there is no GPS to cut |
+| Distance obviously wrong | step length not yours | Stop → Navigate → measure a known distance, divide by steps |
+| Heading frozen | the mount guard is active | that is the feature — hold the phone still and it returns in 0.6 s |
+
+Do not shake the phone to show it "working" — repeated oscillation can register as steps.
+Keep the app foregrounded; sessions live in memory and are lost when the process dies.
+
+---
+
+## What this is, said accurately
+
+Indoor mode is pedestrian dead reckoning: step detection, relative heading, and a
+user-calibrated step length. It estimates a **relative path**, not an absolute indoor
+position and not a floor plan. The drift figure shown is a heuristic allowance, not a
+measured accuracy.
+
+Vehicle mode is the trained pipeline: frame alignment → motion gate → on-device
+gradient-boosted speed model (43 KB, trained on real IO-VNBD with CAN-bus speed labels) →
+6-state Joseph-form EKF. The vehicle accuracy numbers above do not validate the pedestrian
+mode, and vice versa.
+
+---
+
+## Build environment
+
+Flutter 3.24.5, Java 17, Android SDK 34 under `C:/Users/souri/navpulse-build-tools`.
+Note `Color.withValues()` does **not** exist in 3.24.5 (3.27+ only) — use `withOpacity`.
 
 ```powershell
-$env:JAVA_HOME = 'C:/Users/souri/navpulse-build-tools/jdk-17.0.20.1+1'
-$env:ANDROID_HOME = 'C:/Users/souri/navpulse-build-tools/android-sdk'
-Set-Location C:/Users/souri/navpulse-build-tools/indoor-build
-& C:/Users/souri/navpulse-build-tools/flutter/bin/flutter.bat test
-& C:/Users/souri/navpulse-build-tools/flutter/bin/flutter.bat build apk --release
+cd flutter_app
+.\tool\build.ps1 all        # analyze, test, apk -> outputs/apk/navpulse.apk
+.\tool\build.ps1 test       # tests only
 ```
-
-The APK is signed with the local debug key for sideloaded demonstration. Phone sensor performance must still be checked on the physical device.
