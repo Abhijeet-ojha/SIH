@@ -36,6 +36,12 @@ KOTLIN_PATH = os.path.join(
     PROJECT_ROOT, "android_logger", "app", "src", "main", "java", "com", "sih",
     "sensorlogger", "OnDeviceInferenceEngine.kt"
 )
+DART_MODEL_PATH = os.path.join(PROJECT_ROOT, "flutter_app", "lib", "localization",
+                               "speed_model.dart")
+DART_ASSET_PATH = os.path.join(PROJECT_ROOT, "flutter_app", "assets", "models",
+                               "ondevice_model.json")
+DART_GATE_PATH = os.path.join(PROJECT_ROOT, "flutter_app", "lib", "localization",
+                              "motion_gate.dart")
 
 # Kotlin ring-buffer name -> Python channel name
 BUFFERS = {
@@ -152,6 +158,56 @@ class TestOnDeviceParity(unittest.TestCase):
 
         preds = np.array([eval_trees(self.model, r) for r in X])
         np.testing.assert_allclose(preds, np.array(self.golden["predicted_speed"]), atol=1e-12)
+
+    def test_dart_feature_order_matches_exporter(self):
+        """
+        The Flutter app computes these 16 features itself and indexes the tree splits by
+        position. A reordering would not crash - it would silently produce plausible
+        nonsense, which is the worst failure mode available. Checked by parsing the Dart.
+        """
+        if not os.path.exists(DART_MODEL_PATH):
+            self.skipTest("flutter_app not present")
+        src = _read(DART_MODEL_PATH)
+        m = re.search(r"featureNames\s*=\s*\[(.*?)\];", src, re.S)
+        self.assertIsNotNone(m, "featureNames not found in speed_model.dart")
+        names = re.findall(r"'([a-z0-9_]+)'", m.group(1))
+        self.assertEqual(
+            names, ONDEVICE_FEATURES,
+            "Dart featureNames and ONDEVICE_FEATURES disagree.\n"
+            f"  dart:   {names}\n  python: {ONDEVICE_FEATURES}")
+
+    def test_dart_ships_the_same_model_as_python_exports(self):
+        """The Flutter asset must be the model we actually trained, not a stale copy."""
+        if not os.path.exists(DART_ASSET_PATH):
+            self.skipTest("flutter_app not present")
+        shipped = _read_json(DART_ASSET_PATH)
+        self.assertEqual(shipped["features"], self.model["features"])
+        self.assertEqual(len(shipped["trees"]), len(self.model["trees"]))
+        self.assertAlmostEqual(shipped["init"], self.model["init"], places=12)
+        self.assertAlmostEqual(shipped["learning_rate"], self.model["learning_rate"],
+                               places=12)
+        self.assertEqual(shipped.get("provenance"), self.model.get("provenance"),
+                         "the app is shipping a model from a different training run")
+
+    def test_dart_gate_thresholds_match_python(self):
+        if not os.path.exists(DART_GATE_PATH):
+            self.skipTest("flutter_app not present")
+        from src.motion_gate import GateThresholds
+        src = _read(DART_GATE_PATH)
+        th = GateThresholds()
+        for dart_name, py_val in [
+            ("gravStabilityMax", th.grav_stability_max),
+            ("tiltRateMax", th.tilt_rate_max),
+            ("stillAccRms", th.still_acc_rms),
+            ("stillYawRate", th.still_yaw_rate),
+            ("blackoutStillAccRms", th.blackout_still_acc_rms),
+            ("blackoutGravStabilityMax", th.blackout_grav_stability_max),
+            ("blackoutStillMaxSpeed", th.blackout_still_max_speed),
+        ]:
+            m = re.search(rf"{dart_name}\s*=\s*([0-9.]+)", src)
+            self.assertIsNotNone(m, f"{dart_name} not found in motion_gate.dart")
+            self.assertAlmostEqual(float(m.group(1)), py_val, places=6,
+                                   msg=f"{dart_name}: Dart {m.group(1)} vs Python {py_val}")
 
     def test_no_hardcoded_speed_constants_remain(self):
         """The original two-constant speed law must be gone, not merely bypassed."""
