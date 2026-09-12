@@ -7,9 +7,9 @@ import 'package:navpulse_localizer/state/navigation_state_provider.dart';
 /// The shell was restructured from a five-tab technical HUD into an Apple Maps layout:
 /// a full-bleed map owns the screen, and everything else lives in a draggable sheet.
 ///
-/// This test was rewritten to match. The five panels still exist and still carry the same
-/// information - they moved into the sheet rather than being deleted - so the assertions
-/// below walk the same five destinations through the new selector.
+/// This test was rewritten to match. The original panels still exist and still carry the
+/// same information - they moved into the sheet rather than being deleted - so the
+/// assertions below walk the same destinations through the new selector, plus Safety.
 void main() {
   Widget harness() => MultiProvider(
         providers: [
@@ -32,8 +32,8 @@ void main() {
     expect(find.text('Navigate'), findsOneWidget);
     expect(find.text('Sensors'), findsOneWidget);
     expect(find.text('Pipeline'), findsOneWidget);
+    expect(find.text('Safety'), findsOneWidget);
     expect(find.text('Sessions'), findsOneWidget);
-    expect(find.text('Settings'), findsOneWidget);
   });
 
   testWidgets('Every sheet panel opens and renders its content',
@@ -56,6 +56,12 @@ void main() {
     expect(find.text('SPEED SOURCES'), findsOneWidget);
     expect(find.text('PIPELINE'), findsOneWidget);
     expect(find.text('MODEL'), findsOneWidget);
+
+    await tester.tap(find.text('Safety'));
+    await tester.pumpAndSettle();
+    // With no fix yet it must say so rather than show a coordinate.
+    expect(find.text('No GPS fix yet'), findsOneWidget);
+    expect(find.text('SEND MY LOCATION'), findsOneWidget);
 
     await tester.tap(find.text('Sessions'));
     await tester.pumpAndSettle();

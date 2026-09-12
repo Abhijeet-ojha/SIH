@@ -58,6 +58,58 @@ The numbers behind it, all in `test/tilt_heading_test.dart`:
 4. Press **RESTORE GPS**. The gap between where the system thought it was and the first
    real fix is the honest error, live, in front of them.
 
+### Beat 4 — the part that is worth money (30 s)
+
+This is the women's-safety case, and it is what dead reckoning is actually *for*: knowing
+where somebody is when the network does not.
+
+1. Tap **Safety** in the sheet, add a phone number, put a name in.
+2. Press the red **SOS** button on the map.
+3. The exact SMS is shown before anything is sent. Read it out:
+
+   ```
+   SOS for Asha at 21:14
+   12.971604,77.594612
+   within 31m (approximate)
+   last GPS 2min ago, 150m by sensors since
+   https://maps.google.com/?q=12.971604,77.594612
+   ```
+
+4. Press SEND. It goes by **SMS**, so it needs no data connection — the one channel that
+   still works in a basement, a tunnel, or on one bar.
+
+Three things to point at, because each is a decision a competitor will not have made:
+
+- **It sends a circle, not a dot.** GNSS accuracy at the last fix and the drift since,
+  combined in quadrature. A responder told "within 31 m" searches correctly; one told a
+  bare coordinate searches the wrong building with total confidence.
+- **It states how stale the fix is,** rounded *up*. A 2-minute-old position during a walk
+  is a different instruction from a live one.
+- **With no fix it refuses to invent one.** The message says "position unknown" and gives
+  the distance walked instead. Turn location off and press SOS to show this — the coordinate
+  never appears. Anything else would send help somewhere wrong.
+
+If there is no signal the message is **queued**, not dropped, and goes out automatically
+when signal returns.
+
+### Beat 5 — offline navigation (20 s, only if tiles were fetched)
+
+Long-press anywhere on the map to drop a destination. The card shows distance and which way
+it lies relative to the way you are facing, and it keeps working with the radios off.
+
+Say what it is: *"straight-line bearing and distance, not turn-by-turn. There is no road
+graph on the device, so a route down streets would be a drawing, not a route."*
+
+The basemap is bundled into the APK, not fetched at run time:
+
+```powershell
+python tool/fetch_tiles.py --lat <demo lat> --lon <demo lon> --radius-km 1.2 --name "Venue"
+.	ooluild.ps1 apk
+```
+
+With no tiles fetched the map falls back to a metre grid and everything else still works —
+so this beat is optional, and skipping it breaks nothing.
+
 ---
 
 ## If a judge pushes on accuracy
@@ -93,8 +145,15 @@ That is a result about the dataset everyone in this problem statement is using.
 | Distance obviously wrong | step length not yours | Stop → Navigate → measure a known distance, divide by steps |
 | Heading frozen | the mount guard is active | that is the feature — hold the phone still and it returns in 0.6 s |
 
-Do not shake the phone to show it "working" — repeated oscillation can register as steps.
-Keep the app foregrounded; sessions live in memory and are lost when the process dies.
+| SOS says NO FIX | no GPS fix yet this session | that is correct behaviour — it will not invent a coordinate |
+| SOS opens the messaging app instead of sending | SEND_SMS not granted | press send there; grant the permission for one-tap next time |
+| Map shows a grid, not streets | no tiles bundled for this area | run `tool/fetch_tiles.py` and rebuild, or skip Beat 5 |
+
+Shaking the phone is now a *feature demo*, not a hazard: hand it to a judge and let them
+shake it. Steps stay at zero, because a step has to point along gravity, keep the phone
+steady, and hold a rhythm for ~2.5 s before any distance is credited
+(`test/shake_rejection_test.dart`). Keep the app foregrounded; sessions live in memory and
+are lost when the process dies.
 
 ---
 
@@ -104,6 +163,14 @@ Indoor mode is pedestrian dead reckoning: step detection, relative heading, and 
 user-calibrated step length. It estimates a **relative path**, not an absolute indoor
 position and not a floor plan. The drift figure shown is a heuristic allowance, not a
 measured accuracy.
+
+The safety layer turns that relative path into a shareable latitude and longitude by
+anchoring it to the last real GNSS fix. The accuracy circle it quotes is honest about its
+inputs: real GNSS accuracy at the anchor, combined with a drift allowance of 20% of the
+distance walked since. **That 20% is an allowance, not a measurement** — published
+step-length methods land at 5–15%, and it is set deliberately above them because an
+over-large circle costs a searcher time while an over-small one sends them to the wrong
+place. Do not quote it as a measured accuracy.
 
 Vehicle mode is the trained pipeline: frame alignment → motion gate → on-device
 gradient-boosted speed model (43 KB, trained on real IO-VNBD with CAN-bus speed labels) →

@@ -378,6 +378,30 @@ Built for a phone in a windscreen cradle, at speed, at night:
   result on any given phone, so it is shown rather than assumed.
 - Screen kept awake, portrait-locked, dark ground throughout.
 
+### Safety sharing and offline navigation (Flutter app)
+
+The Flutter app (`flutter_app/`) adds the part that makes a dead-reckoned position useful
+to somebody other than the person holding the phone.
+
+- **Absolute position from a relative track.** The pipeline works in local metres from
+  wherever the session started, which cannot be given to anyone. `lib/safety/position_report.dart`
+  pins that frame to the Earth using the last real GNSS fix and reports latitude, longitude,
+  **an uncertainty circle** (fix accuracy and accumulated drift, combined in quadrature)
+  and **how old the fix is**.
+- **It refuses to invent a coordinate.** With no fix ever obtained, `isShareable` is false
+  and the message says "position unknown" plus the distance travelled. Sending the session
+  origin would send a responder somewhere wrong, which is worse than sending nothing.
+- **SMS, because it survives what this system exists for.** Data is the first thing to go
+  in a basement, a tunnel or a crowd. Direct send via `SmsManager`, falling back to a
+  prefilled messaging app when `SEND_SMS` is refused, so it never ends with nothing.
+  Anything that cannot go out now is queued and flushed when a fix or signal returns.
+- **Offline basemap, optional.** `flutter_app/tool/fetch_tiles.py` bakes OpenStreetMap
+  tiles for ONE demo area into the APK; nothing is fetched at run time. With no tiles the
+  map draws a metre grid, so no build depends on the fetch having been run.
+- **Destination guidance, honestly scoped.** Long-press the map to set a destination and
+  get distance plus relative bearing. Not turn-by-turn: there is no road graph on the
+  device, so a route down streets would be a drawing rather than a route.
+
 ---
 
 ## ⚠️ Limitations
@@ -411,6 +435,13 @@ Stated plainly, because each one bounds what the numbers above mean.
   not compiled floating-point output.
 - **2 of 23 drives meet the 10% target.** The system does not yet do what the problem
   statement asks.
+- **The pedestrian drift figure is an allowance, not a measurement.** The safety
+  uncertainty circle grows at 20% of distance walked. Published step-length methods land
+  at 5-15%; this is set deliberately above them because an over-large circle costs a
+  searcher time while an over-small one sends them to the wrong place. It has not been
+  measured on this system and must not be quoted as an accuracy.
+- **Emergency contacts do not persist.** They live in memory for the session, like the
+  online calibration. Both need the same one-line swap to a real store.
 
 ---
 

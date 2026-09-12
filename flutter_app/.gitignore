@@ -41,3 +41,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Offline basemap tiles, fetched by tool/fetch_tiles.py for one demo area. The manifest is
+# tracked so the app has something to read; the PNGs are OpenStreetMap's, are a few MB of
+# binaries, and are one command to regenerate.
+assets/tiles/**/*.png

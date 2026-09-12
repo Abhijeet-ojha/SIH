@@ -9,10 +9,21 @@
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
 
     <!-- Local LAN / Hotspot WebSocket Networking (Zero Internet required) -->
+    <!-- Emergency SMS. Direct send is one tap and needs no data connection; if this is
+         refused the app falls back to opening the messaging app prefilled, which needs no
+         permission, so refusing it degrades the feature rather than removing it. -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+    </queries>
 
     <application
         android:label="NavPulse Localizer"

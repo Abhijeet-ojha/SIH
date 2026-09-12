@@ -28,3 +28,7 @@ flutter:
     # The trained speed model, exported by scripts/export_ondevice_model.py from real
     # IO-VNBD drives with CAN-bus speed labels. 60 gradient-boosted trees, 43 KB.
     - assets/models/ondevice_model.json
+    # Offline basemap for one demo area, fetched by tool/fetch_tiles.py. Optional: with
+    # no tiles present the map draws a metre grid instead, so the build never depends on
+    # the fetch having been run.
+    - assets/tiles/
